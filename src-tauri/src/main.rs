@@ -41,9 +41,11 @@ struct UpgradeResult {
     message: String,
 }
 
-fn dsh_command() -> Command {
-    // Resolve the launcher so it also works when launched from Finder/Dock,
-    // where the GUI process has a minimal PATH without node/npx.
+/// Base npx launcher for non-Windows (macOS/Linux). Prefers an explicit
+/// fnm path so the app also works when launched from Finder/Dock, where the
+/// GUI process has a minimal PATH without node/npx; falls back to plain npx.
+#[cfg(not(windows))]
+fn base_npx_cmd() -> Command {
     for fnm in [
         "/opt/homebrew/bin/fnm",
         "/opt/homebrew/opt/fnm/bin/fnm",
@@ -51,54 +53,69 @@ fn dsh_command() -> Command {
     ] {
         if Path::new(fnm).is_file() {
             let mut c = Command::new(fnm);
-            c.args(["exec", "--using", "default", "--", "npx", "--yes", "@deepseek-ai/dsh", "web"]);
+            c.args(["exec", "--using", "default", "--", "npx"]);
             return c;
         }
     }
-    let mut c = Command::new("npx");
+    Command::new("npx")
+}
+
+/// Windows: GUI-launched processes may inherit a stale PATH (Node.js not
+/// visible), and Rust's Command::new("npx") cannot resolve the npx.cmd batch
+/// shim the way cmd.exe does. So run through "cmd /C npx ..." — exactly like
+/// a user typing it in a terminal — and merge the standard Node.js install
+/// directories into PATH as a safety net.
+#[cfg(windows)]
+fn base_npx_cmd() -> Command {
+    let mut c = Command::new("cmd");
+    c.args(["/C", "npx"]);
+    augment_path_with_node(&mut c);
+    c
+}
+
+#[cfg(windows)]
+fn augment_path_with_node(c: &mut Command) {
+    let mut dirs: Vec<String> = Vec::new();
+    for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+        if let Ok(base) = std::env::var(var) {
+            let candidate = if var == "LOCALAPPDATA" {
+                format!("{base}/Programs/nodejs")
+            } else {
+                format!("{base}/nodejs")
+            };
+            if Path::new(&candidate).is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+    if dirs.is_empty() {
+        return;
+    }
+    let mut path = dirs.join(";");
+    if let Ok(p) = std::env::var("PATH") {
+        if !p.is_empty() {
+            path.push(';');
+            path.push_str(&p);
+        }
+    }
+    c.env("PATH", path);
+}
+
+fn dsh_command() -> Command {
+    let mut c = base_npx_cmd();
     c.args(["--yes", "@deepseek-ai/dsh", "web"]);
     c
 }
 
 fn upgrade_command() -> Command {
-    for fnm in [
-        "/opt/homebrew/bin/fnm",
-        "/opt/homebrew/opt/fnm/bin/fnm",
-        "/usr/local/bin/fnm",
-    ] {
-        if Path::new(fnm).is_file() {
-            let mut c = Command::new(fnm);
-            c.args([
-                "exec", "--using", "default", "--",
-                "npx", "--yes", "--latest", "@deepseek-ai/dsh", "--", "--version",
-            ]);
-            c.env("npm_config_update_notifier", "false");
-            return c;
-        }
-    }
-    let mut c = Command::new("npx");
+    let mut c = base_npx_cmd();
     c.args(["--yes", "--latest", "@deepseek-ai/dsh", "--", "--version"]);
     c.env("npm_config_update_notifier", "false");
     c
 }
 
 fn version_command() -> Command {
-    for fnm in [
-        "/opt/homebrew/bin/fnm",
-        "/opt/homebrew/opt/fnm/bin/fnm",
-        "/usr/local/bin/fnm",
-    ] {
-        if Path::new(fnm).is_file() {
-            let mut c = Command::new(fnm);
-            c.args([
-                "exec", "--using", "default", "--",
-                "npx", "--yes", "@deepseek-ai/dsh", "--", "--version",
-            ]);
-            c.env("npm_config_update_notifier", "false");
-            return c;
-        }
-    }
-    let mut c = Command::new("npx");
+    let mut c = base_npx_cmd();
     c.args(["--yes", "@deepseek-ai/dsh", "--", "--version"]);
     c.env("npm_config_update_notifier", "false");
     c

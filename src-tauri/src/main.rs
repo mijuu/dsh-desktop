@@ -116,49 +116,77 @@ fn dsh_command() -> Command {
 }
 
 fn upgrade_command() -> Command {
+    // @latest tag makes npx fetch the newest release (the --latest flag is
+    // not a valid npx option and only produces npm warnings).
     let mut c = base_npx_cmd();
-    c.args(["--yes", "--latest", "@deepseek-ai/dsh", "--", "--version"]);
+    c.args(["--yes", "@deepseek-ai/dsh@latest", "--version"]);
     c.env("npm_config_update_notifier", "false");
     c
 }
 
 fn version_command() -> Command {
+    // NOTE: no "--" separator — npx passes everything after the package name
+    // to the binary, and dsh would receive "-- --version" as positional args.
     let mut c = base_npx_cmd();
-    c.args(["--yes", "@deepseek-ai/dsh", "--", "--version"]);
+    c.args(["--yes", "@deepseek-ai/dsh", "--version"]);
     c.env("npm_config_update_notifier", "false");
     c
 }
 
 fn extract_version(lines: &[String]) -> Option<String> {
+    // Scan from the last line backwards for the first semver pattern, so it
+    // works with bare "0.1.0", "v0.1.0", "dsh 0.1.0-rc.6", npm download lines
+    // ("...dsh-0.1.0.tgz"), etc.
     for line in lines.iter().rev() {
-        let t = line.trim();
-        let candidate = t
-            .strip_prefix("v")
-            .or_else(|| t.strip_prefix("version "))
-            .unwrap_or(t)
-            .trim();
-        if looks_like_version(candidate) {
-            return Some(candidate.to_string());
+        if let Some(v) = find_semver(line) {
+            return Some(v);
         }
     }
     None
 }
 
-fn looks_like_version(s: &str) -> bool {
-    let mut saw_digit = false;
-    let mut dots = 0u32;
-    for c in s.chars() {
-        if c.is_ascii_digit() {
-            saw_digit = true;
-        } else if c == '.' {
-            dots += 1;
-        } else if c == '-' || c == '+' || c.is_ascii_alphabetic() {
-            // semver prerelease / build / letters allowed
-        } else {
-            return false;
+/// Find a semver-like pattern (digits.digits.digits with optional
+/// -prerelease / +build suffix) anywhere inside a line.
+fn find_semver(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        if !b[i].is_ascii_digit() {
+            i += 1;
+            continue;
         }
+        let start = i;
+        let mut j = i;
+        let mut dots = 0u32;
+        while j < n {
+            if b[j].is_ascii_digit() {
+                j += 1;
+            } else if b[j] == b'.' && dots < 2 && j + 1 < n && b[j + 1].is_ascii_digit() {
+                dots += 1;
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if dots == 2 {
+            let mut end = j;
+            if end < n && b[end] == b'-' {
+                let mut k = end + 1;
+                while k < n
+                    && (b[k].is_ascii_alphanumeric() || b[k] == b'.' || b[k] == b'-')
+                {
+                    k += 1;
+                }
+                end = k;
+            }
+            if end > start {
+                return Some(s[start..end].to_string());
+            }
+        }
+        i = if j > i { j } else { i + 1 };
     }
-    saw_digit && dots >= 1
+    None
 }
 
 fn is_port_open(port: u16) -> bool {

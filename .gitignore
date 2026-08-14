@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Local tool caches (never commit)
+.cargo-home/
+.npm-cache/
+
+# Node / frontend
+node_modules/
+/dist/
+/release/
+
+# Rust / Tauri build output
+/src-tauri/target/
+/src-tauri/gen/schemas/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp

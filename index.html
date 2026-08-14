@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH Desktop</title>
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+  <body>
+    <header class="topbar" id="topbar">
+      <div class="brand">
+        <span class="title">DSH Desktop</span>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-tab="app">App</button>
+        <button class="tab" data-tab="cli">CLI</button>
+      </nav>
+      <div class="status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">启动中…</span>
+      </div>
+    </header>
+
+    <div class="grabber" id="grabber" title="显示工具栏"></div>
+
+    <main>
+      <section class="panel active" id="panel-app">
+        <div class="app-frame">
+          <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>正在启动 npx @deepseek-ai/dsh web …</p>
+          </div>
+          <iframe id="app-iframe" src="about:blank" title="DSH Desktop"></iframe>
+        </div>
+      </section>
+
+      <section class="panel" id="panel-cli">
+        <div class="cli-toolbar">
+          <button id="btn-start">启动</button>
+          <button id="btn-stop">停止</button>
+          <button id="btn-restart">重启</button>
+          <button id="btn-upgrade">升级</button>
+          <span class="spacer"></span>
+          <button id="btn-clear">清空</button>
+          <button id="btn-copy">复制</button>
+        </div>
+        <pre class="log" id="log"></pre>
+      </section>
+    </main>
+  </body>
+</html>

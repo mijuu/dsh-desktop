@@ -1,0 +1,182 @@
+:root {
+  --bg: #0f1115;
+  --bg-2: #161a22;
+  --bg-3: #1e2430;
+  --border: #2a3140;
+  --fg: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #4c8dff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  height: 52px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  transform: translateY(-100%);
+  transition: transform 0.18s ease;
+}
+.topbar.visible { transform: translateY(0); }
+
+.grabber {
+  position: fixed;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 56px;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(230, 233, 239, 0.35);
+  z-index: 101;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.grabber.hidden { opacity: 0; pointer-events: none; }
+
+.brand { display: flex; align-items: center; gap: 10px; }
+
+.title { font-weight: 600; font-size: 14px; letter-spacing: 0.2px; }
+
+.tabs { display: flex; gap: 4px; margin-left: 12px; }
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.tab:hover { background: var(--bg-3); color: var(--fg); }
+.tab.active { background: var(--bg-3); color: var(--fg); font-weight: 600; }
+
+.status { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--yellow); }
+.dot.running { background: var(--green); }
+.dot.stopped { background: var(--red); }
+.dot.error { background: var(--red); }
+.dot.starting { background: var(--yellow); }
+
+/* main fills the rest of the window */
+main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+/* panels are flex children that fill main; only the active one shows */
+.panel {
+  flex: 1 1 100%;
+  min-width: 0;
+  min-height: 0;
+  display: none;
+}
+.panel.active { display: flex; flex-direction: column; }
+#panel-cli { padding-top: 52px; }
+
+/* App tab: webview fills the whole panel */
+.app-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+#app-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #fff;
+  display: block;
+}
+
+.loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--bg);
+  z-index: 2;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading p { color: var(--muted); font-size: 14px; margin: 0; }
+
+/* CLI tab */
+.cli-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  flex: 0 0 auto;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+}
+.cli-toolbar button {
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.cli-toolbar button:hover { border-color: var(--accent); }
+.spacer { flex: 1; }
+
+.log {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 12px 16px;
+  overflow: auto;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--bg);
+  color: var(--fg);
+}
+.log .out { color: var(--fg); }
+.log .err { color: var(--red); }
+.log .sys { color: var(--muted); }

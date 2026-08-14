@@ -82,6 +82,28 @@ fn upgrade_command() -> Command {
     c
 }
 
+fn version_command() -> Command {
+    for fnm in [
+        "/opt/homebrew/bin/fnm",
+        "/opt/homebrew/opt/fnm/bin/fnm",
+        "/usr/local/bin/fnm",
+    ] {
+        if Path::new(fnm).is_file() {
+            let mut c = Command::new(fnm);
+            c.args([
+                "exec", "--using", "default", "--",
+                "npx", "--yes", "@deepseek-ai/dsh", "--", "--version",
+            ]);
+            c.env("npm_config_update_notifier", "false");
+            return c;
+        }
+    }
+    let mut c = Command::new("npx");
+    c.args(["--yes", "@deepseek-ai/dsh", "--", "--version"]);
+    c.env("npm_config_update_notifier", "false");
+    c
+}
+
 fn extract_version(lines: &[String]) -> Option<String> {
     for line in lines.iter().rev() {
         let t = line.trim();
@@ -205,7 +227,8 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
         });
     }
 
-    // readiness polling
+    // readiness polling; aborts early when the process exits before the
+    // port opens (e.g. node/npx missing) so the UI reports failure at once
     {
         let app = app.clone();
         std::thread::spawn(move || {
@@ -213,6 +236,9 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
             loop {
                 if is_port_open(PORT) {
                     let _ = app.emit("server:ready", ());
+                    return;
+                }
+                if app.state::<ServerState>().pid.lock().unwrap().is_none() {
                     return;
                 }
                 if Instant::now() >= deadline {
@@ -339,6 +365,27 @@ async fn upgrade_dsh(app: AppHandle) -> Result<UpgradeResult, String> {
     Ok(UpgradeResult { ok, version, restarted, message })
 }
 
+/// Report the DeepSeek Harness (dsh) CLI version that will actually run.
+#[tauri::command]
+async fn dsh_version() -> Result<String, String> {
+    let mut cmd = version_command();
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("无法获取 dsh 版本：{e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("读取 dsh 版本失败：{e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+    let version = extract_version(&lines).unwrap_or_else(|| "unknown".to_string());
+    Ok(version)
+}
+
 #[tauri::command]
 fn server_status(app: AppHandle) -> Status {
     let state = app.state::<ServerState>();
@@ -354,7 +401,8 @@ fn main() {
             stop_server,
             restart_server,
             server_status,
-            upgrade_dsh
+            upgrade_dsh,
+            dsh_version
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

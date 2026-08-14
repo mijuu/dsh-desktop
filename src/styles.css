@@ -180,3 +180,42 @@ main {
 .log .out { color: var(--fg); }
 .log .err { color: var(--red); }
 .log .sys { color: var(--muted); }
+
+/* version chip */
+.version {
+  margin-left: 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* topbar close button */
+.bar-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.bar-close:hover { color: var(--fg); background: var(--bg-3); }
+
+/* loading overlay states */
+.loading p.error-text { color: var(--red); font-weight: 600; }
+.loading .hint { font-size: 12.5px; max-width: 420px; text-align: center; line-height: 1.6; }
+.retry-btn {
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.retry-btn:hover { border-color: var(--accent); }

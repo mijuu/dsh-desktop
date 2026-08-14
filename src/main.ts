@@ -16,11 +16,14 @@ const dot = q<HTMLSpanElement>("#status-dot");
 const statusText = q<HTMLSpanElement>("#status-text");
 const topbar = q<HTMLElement>("#topbar");
 const grabber = q<HTMLDivElement>("#grabber");
+const loadingSpinner = q<HTMLDivElement>("#loading-spinner");
+const loadingText = q<HTMLParagraphElement>("#loading-text");
 
 type State = "starting" | "running" | "stopped" | "error";
 
 let upgrading = false;
 let cliMode = false;
+let ready = false;
 let hideTimer: number | undefined;
 
 function setStatus(state: State, text: string): void {
@@ -37,6 +40,26 @@ function appendLog(line: string, kind: "out" | "err" | "sys"): void {
     if (log.firstElementChild) log.removeChild(log.firstElementChild);
   }
   log.scrollTop = log.scrollHeight;
+}
+
+/** Switch the loading overlay between "starting", "error" and "stopped" states. */
+function setLoading(
+  message: string,
+  opts: { error?: boolean; retry?: boolean; spinner?: boolean } = {},
+): void {
+  loadingSpinner.style.display = opts.error || opts.spinner === false ? "none" : "";
+  loadingText.textContent = message;
+  loadingText.classList.toggle("error-text", !!opts.error);
+  q<HTMLParagraphElement>("#loading-hint").hidden = !opts.error;
+  q<HTMLButtonElement>("#btn-retry").hidden = !opts.retry;
+}
+
+function showStartupError(message: string): void {
+  ready = false;
+  setStatus("error", "启动失败");
+  setLoading(message, { error: true, retry: true });
+  showBar();
+  appendLog("> " + message, "err");
 }
 
 function showApp(): void {
@@ -74,17 +97,22 @@ function setupBar(): void {
   topbar.addEventListener("mouseleave", () => {
     if (!cliMode) scheduleHide();
   });
+  q("#bar-close").addEventListener("click", () => {
+    topbar.classList.remove("visible");
+    grabber.classList.remove("hidden");
+  });
 }
 
 async function start(): Promise<void> {
+  ready = false;
   setStatus("starting", "启动中…");
+  setLoading("正在启动 npx @deepseek-ai/dsh web …");
   appendLog("$ npx @deepseek-ai/dsh web", "sys");
   try {
     const s = await invoke<any>("start_server");
     appendLog("> 等待端口 " + s.port + " 就绪…", "sys");
   } catch (e) {
-    setStatus("error", "启动失败");
-    appendLog(String(e), "err");
+    showStartupError("启动失败：" + String(e));
   }
 }
 
@@ -169,19 +197,27 @@ async function setupEvents(): Promise<void> {
   await listen<string>("server:stdout", (e) => appendLog(e.payload, "out"));
   await listen<string>("server:stderr", (e) => appendLog(e.payload, "err"));
   await listen("server:ready", () => {
+    ready = true;
     setStatus("running", "运行中 · " + APP_URL);
     showApp();
     appendLog("> 就绪：" + APP_URL, "sys");
+    if (!cliMode) scheduleHide();
   });
   await listen("server:timeout", () => {
-    setStatus("error", "启动超时");
-    appendLog("> 启动超时：90 秒内未检测到端口监听", "err");
+    showStartupError("启动超时：90 秒内未检测到端口监听，请检查 CLI 日志");
   });
   await listen<number | null>("server:exited", (e) => {
-    setStatus("stopped", "已退出");
-    appendLog("> 进程已退出 (code=" + e.payload + ")", "sys");
+    if (ready) {
+      setStatus("stopped", "已退出");
+      appendLog("> 进程已退出 (code=" + e.payload + ")", "sys");
+    } else {
+      showStartupError("启动失败：进程提前退出（退出码 " + e.payload + "），请检查 CLI 日志");
+    }
   });
-  await listen("server:stopped", () => setStatus("stopped", "已停止"));
+  await listen("server:stopped", () => {
+    if (!ready) setLoading("服务已停止", { spinner: false });
+    setStatus("stopped", "已停止");
+  });
   await listen<string>("upgrade:stdout", (e2) => appendLog(e2.payload, "out"));
   await listen<string>("upgrade:stderr", (e2) => appendLog(e2.payload, "err"));
 }
@@ -193,19 +229,31 @@ function setupButtons(): void {
   q("#btn-upgrade").addEventListener("click", upgrade);
   q("#btn-clear").addEventListener("click", clearLog);
   q("#btn-copy").addEventListener("click", copyLog);
+  q("#btn-retry").addEventListener("click", start);
+}
+
+/** Show the DeepSeek Harness (dsh) version in the topbar, not the app's own. */
+async function refreshDshVersion(): Promise<void> {
+  const el = q<HTMLSpanElement>("#version");
+  try {
+    const v = await invoke<string>("dsh_version");
+    el.textContent = v && v !== "unknown" ? "dsh v" + v : "dsh 未知";
+  } catch {
+    el.textContent = "dsh 未知";
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupButtons();
   setupBar();
+  // The bar is visible at startup so users discover the controls,
+  // then auto-hides after 5s (or on mouseleave / × button).
   showBar();
   window.setTimeout(() => {
-    if (!cliMode) {
-      topbar.classList.remove("visible");
-      grabber.classList.remove("hidden");
-    }
-  }, 2500);
+    if (!cliMode) scheduleHide();
+  }, 5000);
+  refreshDshVersion();
   await setupEvents();
   try {
     const s = await invoke<any>("server_status");

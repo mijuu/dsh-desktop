@@ -201,6 +201,7 @@ async function setupEvents(): Promise<void> {
     setStatus("running", "运行中 · " + APP_URL);
     showApp();
     appendLog("> 就绪：" + APP_URL, "sys");
+    refreshDshVersion();
     if (!cliMode) scheduleHide();
   });
   await listen("server:timeout", () => {
@@ -253,7 +254,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   window.setTimeout(() => {
     if (!cliMode) scheduleHide();
   }, 5000);
-  refreshDshVersion();
+  q("#version").textContent = "dsh …";
   await setupEvents();
   try {
     const s = await invoke<any>("server_status");

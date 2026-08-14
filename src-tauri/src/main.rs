@@ -65,11 +65,19 @@ fn base_npx_cmd() -> Command {
 /// shim the way cmd.exe does. So run through "cmd /C npx ..." — exactly like
 /// a user typing it in a terminal — and merge the standard Node.js install
 /// directories into PATH as a safety net.
+/// Windows: keep the child console hidden so no cmd window flashes up.
+#[cfg(windows)]
+fn hide_console(c: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+
 #[cfg(windows)]
 fn base_npx_cmd() -> Command {
     let mut c = Command::new("cmd");
     c.args(["/C", "npx"]);
     augment_path_with_node(&mut c);
+    hide_console(&mut c);
     c
 }
 
@@ -166,9 +174,10 @@ fn kill_process_group(pid: u32) {
 
 #[cfg(not(unix))]
 fn kill_process_group(pid: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status();
+    let mut c = Command::new("taskkill");
+    c.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    hide_console(&mut c);
+    let _ = c.status();
 }
 
 fn start_internal(app: &AppHandle) -> Result<Status, String> {

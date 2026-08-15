@@ -96,10 +96,6 @@ npm run tauri build
 
 在 Windows 上，应用使用 \`cmd /C\` 启动 npx（解析 \`.cmd\` 批处理文件）并设置 \`CREATE_NO_WINDOW\` 隐藏控制台窗口。同时将标准 Node.js 安装目录合并到子进程 PATH，解决 GUI 启动的进程环境变量过旧的问题。
 
-## 发布
-
-打一个 \`v*\` 标签（如 \`v0.2.5\`）并 push 到 GitHub，[release 工作流](.github/workflows/release.yml) 会自动构建 macOS（Intel + Apple Silicon）和 Windows 安装包并创建 draft Release。
-
 ## License
 
 [MIT](LICENSE) © mijuu

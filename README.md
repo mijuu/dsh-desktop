@@ -96,10 +96,6 @@ The app is a thin native wrapper:
 
 On Windows, the app uses \`cmd /C\` to launch npx (resolving the \`.cmd\` shim) and sets \`CREATE_NO_WINDOW\` to hide the console window. It also merges standard Node.js install directories into the child PATH to handle GUI-launched processes with stale environments.
 
-## Release
-
-Push a \`v*\` tag (e.g., \`v0.2.5\`); the [release workflow](.github/workflows/release.yml) builds macOS (Intel + Apple Silicon) and Windows installers and creates a draft Release on GitHub.
-
 ## License
 
 [MIT](LICENSE) © mijuu

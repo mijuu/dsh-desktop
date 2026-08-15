@@ -4,6 +4,14 @@
 
 一个原生桌面应用（Tauri 2），将 [DeepSeek Harness](https://github.com/deepseek-ai/dsh) 的命令行工具和 Web UI 统一在一个窗口中管理。
 
+## 截图
+
+<p align="center">
+  <img src="screenshots/main-window.png" width="32%" />
+  <img src="screenshots/toolbar.png" width="32%" />
+  <img src="screenshots/cli-windows.png" width="32%" />
+</p>
+
 ## 目的
 
 DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太方便。**DSH Desktop** 解决了这个问题：

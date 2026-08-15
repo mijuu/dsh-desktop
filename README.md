@@ -4,6 +4,14 @@
 
 A native desktop application (Tauri 2) that unifies the [DeepSeek Harness](https://github.com/deepseek-ai/dsh) CLI and Web UI into a single, easy-to-manage experience.
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/main-window.png" width="32%" />
+  <img src="screenshots/toolbar.png" width="32%" />
+  <img src="screenshots/cli-windows.png" width="32%" />
+</p>
+
 ## Purpose
 
 DeepSeek Harness provides both a command-line interface and a web-based UI, but managing them separately can be inconvenient. **DSH Desktop** solves this by:

@@ -1,79 +1,84 @@
-import { deflateSync } from "node:zlib";
-import { writeFileSync } from "node:fs";
+import { Resvg } from "@resvg/resvg-js";
+import { writeFileSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-const W = 1024;
-const H = 1024;
-const R = 180;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-function makeTable() {
-  const t = new Int32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
-  }
-  return t;
+const SIZE = 1024;
+
+// macOS icon spec (1024x1024 canvas):
+//   Content area: 824x824 px, centered
+//   Padding: 100px on each side
+//   Corner radius: 185px (superellipse / squircle)
+const MAC_CONTENT = 824;
+const MAC_PADDING = (SIZE - MAC_CONTENT) / 2; // 100
+const MAC_RADIUS = 185;
+
+// Windows icon spec (1024x1024 canvas):
+//   Full canvas with rounded corners
+//   Corner radius: ~10% of size = 100px
+const WIN_RADIUS = 100;
+
+function main() {
+  const svgPath = join(__dirname, "../src-tauri/app-icon-source.svg");
+  let svg = readFileSync(svgPath, "utf-8");
+
+  // Extract the inner content of the SVG
+  const innerContent = svg.replace(/<svg[^>]*>/, "").replace("</svg>", "");
+
+  // Original SVG viewBox: 0 0 23.16 17.04
+  // Scale to fit within the content area with some inner padding
+  const innerPad = MAC_CONTENT * 0.15; // 15% inner padding
+  const iconArea = MAC_CONTENT - innerPad * 2;
+  const scaleX = iconArea / 23.16;
+  const scaleY = iconArea / 17.04;
+  const scale = Math.min(scaleX, scaleY);
+  const iconW = 23.16 * scale;
+  const iconH = 17.04 * scale;
+  const offsetX = (SIZE - iconW) / 2;
+  const offsetY = (SIZE - iconH) / 2;
+
+  // === macOS: squircle (rounded rect) 824x824, 100px padding, 185px radius ===
+  const macSvg = `<svg width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <clipPath id="mac-clip">
+        <rect x="${MAC_PADDING}" y="${MAC_PADDING}" width="${MAC_CONTENT}" height="${MAC_CONTENT}" rx="${MAC_RADIUS}" ry="${MAC_RADIUS}"/>
+      </clipPath>
+    </defs>
+    <g clip-path="url(#mac-clip)">
+      <rect x="${MAC_PADDING}" y="${MAC_PADDING}" width="${MAC_CONTENT}" height="${MAC_CONTENT}" rx="${MAC_RADIUS}" ry="${MAC_RADIUS}" fill="black"/>
+      <g transform="translate(${offsetX}, ${offsetY}) scale(${scale})">
+        ${innerContent}
+      </g>
+    </g>
+  </svg>`;
+
+  const resvgMac = new Resvg(macSvg, { background: "transparent", fitTo: { mode: "original" } });
+  const macPng = resvgMac.render().asPng();
+  writeFileSync(join(__dirname, "../src-tauri/app-icon.png"), macPng);
+  console.log("wrote app-icon.png (macOS, 824x824 squircle, r=185):", macPng.length, "bytes");
+
+  // === Windows: full canvas with rounded corners (r=100), transparent outside ===
+  const winSvg = `<svg width="${SIZE}" height="${SIZE}" viewBox="0 0 ${SIZE} ${SIZE}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <clipPath id="win-clip">
+        <rect width="${SIZE}" height="${SIZE}" rx="${WIN_RADIUS}" ry="${WIN_RADIUS}"/>
+      </clipPath>
+    </defs>
+    <g clip-path="url(#win-clip)">
+      <rect width="${SIZE}" height="${SIZE}" rx="${WIN_RADIUS}" ry="${WIN_RADIUS}" fill="black"/>
+      <g transform="translate(${offsetX}, ${offsetY}) scale(${scale})">
+        ${innerContent}
+      </g>
+    </g>
+  </svg>`;
+
+  const resvgWin = new Resvg(winSvg, { background: "transparent", fitTo: { mode: "original" } });
+  const winPng = resvgWin.render().asPng();
+  writeFileSync(join(__dirname, "../src-tauri/app-icon-win.png"), winPng);
+  console.log("wrote app-icon-win.png (Windows, full canvas, r=100, transparent corners):", winPng.length, "bytes");
 }
-const TABLE = makeTable();
 
-function crc32(buf) {
-  let crc = -1;
-  for (let i = 0; i < buf.length; i++) {
-    crc = TABLE[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
-  }
-  return (crc ^ -1) >>> 0;
-}
-
-function chunk(type, data) {
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const typeBuf = Buffer.from(type, "ascii");
-  const crc = Buffer.alloc(4);
-  crc.writeUInt32BE(crc32(Buffer.concat([typeBuf, data])));
-  return Buffer.concat([len, typeBuf, data, crc]);
-}
-
-const raw = Buffer.alloc(H * (1 + W * 4));
-for (let y = 0; y < H; y++) {
-  const row = y * (1 + W * 4);
-  raw[row] = 0;
-  for (let x = 0; x < W; x++) {
-    const dx = Math.max(R - x, x - (W - 1 - R), 0);
-    const dy = Math.max(R - y, y - (H - 1 - R), 0);
-    const d = Math.sqrt(dx * dx + dy * dy);
-    let alpha = 1;
-    if (d > R) alpha = 0;
-    else if (d > R - 2) alpha = (R - d) / 2;
-
-    const t = y / H;
-    const rr = Math.round(0x2f + (0x7b - 0x2f) * t);
-    const gg = Math.round(0x5e + (0x5c - 0x5e) * t);
-    const bb = Math.round(0xc8 + (0xff - 0xc8) * t);
-
-    const o = row + 1 + x * 4;
-    raw[o] = rr;
-    raw[o + 1] = gg;
-    raw[o + 2] = bb;
-    raw[o + 3] = Math.round(255 * alpha);
-  }
-}
-
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(W, 0);
-ihdr.writeUInt32BE(H, 4);
-ihdr[8] = 8;
-ihdr[9] = 6;
-ihdr[10] = 0;
-ihdr[11] = 0;
-ihdr[12] = 0;
-
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk("IHDR", ihdr),
-  chunk("IDAT", deflateSync(raw, { level: 9 })),
-  chunk("IEND", Buffer.alloc(0)),
-]);
-
-const out = new URL("../src-tauri/app-icon.png", import.meta.url);
-writeFileSync(out, png);
-console.log("wrote app-icon.png:", png.length, "bytes");
+main();

@@ -34,7 +34,7 @@ DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太�
 
 ## 环境要求
 
-- **Node.js 18+** 和 npm（必需 — 应用通过 \`npx\` 运行 dsh）
+- **Node.js 22.19.0+** 和 npm（必需 — 应用通过 \`npx\` 运行 dsh，而 dsh 本身要求 Node.js 22.19.0+）
   - 下载地址：https://nodejs.org/
   - 验证：在终端中 \`node --version\` 和 \`npx --version\` 都应正常输出
 
@@ -82,7 +82,7 @@ npm run tauri build
 # 产物在 src-tauri/target/release/bundle/
 ```
 
-> 首次图标生成：\`node scripts/gen-icon.mjs && npx tauri icon src-tauri/app-icon.png\`
+> 首次图标生成：\`node scripts/gen-icon.mjs && npx tauri icon src-tauri/app-icon.png && node scripts/gen-win-ico.mjs\`
 
 ## 工作原理
 

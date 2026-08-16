@@ -34,7 +34,7 @@ Think of it as a native shell that wraps \`npx @deepseek-ai/dsh web\` with proce
 
 ## Prerequisites
 
-- **Node.js 18+** and npm (required — the app uses \`npx\` to run dsh)
+- **Node.js 22.19.0+** and npm (required — the app uses \`npx\` to run dsh, and dsh itself requires Node.js 22.19.0+)
   - Download: https://nodejs.org/
   - Verify: \`node --version\` and \`npx --version\` should both work in your terminal
 
@@ -82,7 +82,7 @@ npm run tauri build
 # Output in src-tauri/target/release/bundle/
 ```
 
-> First-time icon generation: \`node scripts/gen-icon.mjs && npx tauri icon src-tauri/app-icon.png\`
+> First-time icon generation: \`node scripts/gen-icon.mjs && npx tauri icon src-tauri/app-icon.png && node scripts/gen-win-ico.mjs\`
 
 ## How It Works
 

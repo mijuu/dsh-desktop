@@ -59,6 +59,17 @@ DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太�
 2. 运行安装程序，按提示完成安装
 3. 从开始菜单启动 "DSH Desktop"
 
+### Linux
+
+1. 从 [Releases 页面](https://github.com/mijuu/dsh-desktop/releases) 下载对应发行版的安装包：
+   - `.deb`（Debian / Ubuntu / Linux Mint）
+   - `.rpm`（Fedora / RHEL / openSUSE）
+   - `.AppImage`（任意发行版，免安装）
+2. 安装方式：
+   - **Debian/Ubuntu**：`sudo dpkg -i DSH.Desktop_*_amd64.deb`（或 `sudo apt install ./DSH.Desktop_*_amd64.deb`）
+   - **Fedora/RHEL**：`sudo rpm -i DSH.Desktop_*_x86_64.rpm`
+   - **AppImage**：`chmod +x DSH.Desktop_*_x86_64.AppImage && ./DSH.Desktop_*_x86_64.AppImage`
+
 ## 使用说明
 
 1. **启动应用** — 会自动启动 dsh web 服务

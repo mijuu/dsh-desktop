@@ -59,6 +59,17 @@ Think of it as a native shell that wraps \`npx @deepseek-ai/dsh web\` with proce
 2. Run the installer and follow the prompts
 3. Launch "DSH Desktop" from the Start Menu
 
+### Linux
+
+1. Download the package for your distribution from the [Releases page](https://github.com/mijuu/dsh-desktop/releases):
+   - `.deb` (Debian / Ubuntu / Linux Mint)
+   - `.rpm` (Fedora / RHEL / openSUSE)
+   - `.AppImage` (any distribution, no installation required)
+2. Install:
+   - **Debian/Ubuntu**: `sudo dpkg -i DSH.Desktop_*_amd64.deb` (or `sudo apt install ./DSH.Desktop_*_amd64.deb`)
+   - **Fedora/RHEL**: `sudo rpm -i DSH.Desktop_*_x86_64.rpm`
+   - **AppImage**: `chmod +x DSH.Desktop_*_x86_64.AppImage && ./DSH.Desktop_*_x86_64.AppImage`
+
 ## Usage
 
 1. **Launch the app** — it will automatically start the dsh web server

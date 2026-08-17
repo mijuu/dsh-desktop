@@ -676,6 +676,7 @@ version = "0.2.8"
 dependencies = [
  "libc",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
 ]

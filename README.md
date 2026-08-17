@@ -18,25 +18,28 @@ DeepSeek Harness provides both a command-line interface and a web-based UI, but 
 
 - **Unified Management**: Run the CLI and Web UI together in one native app window
 - **Zero Custom Logic**: Fully delegates to the original \`@deepseek-ai/dsh\` package — no reimplementation, no feature drift
-- **Instant Updates**: Uses \`npx\` to dynamically fetch the latest version, so you always get the newest features without waiting for app updates
+- **One-Click Setup & Upgrade**: Installs \`dsh\` globally on first launch, and the Upgrade button updates it via \`npm update -g\`
 
-Think of it as a native shell that wraps \`npx @deepseek-ai/dsh web\` with process management, real-time logs, and a clean UI.
+Think of it as a native shell that wraps \`dsh web\` with process management, real-time logs, and a clean UI.
 
 ## Features
 
-- **Automatic Server Launch**: Starts \`npx @deepseek-ai/dsh web\` on startup (default: http://127.0.0.1:3080)
+- **Automatic Server Launch**: Starts \`dsh web\` on startup (default: http://127.0.0.1:3080)
+- **Environment Check**: Verifies Node.js 22.19.0+ on launch and prompts with a clear message (and a "Open Node.js website" button) when Node.js is missing or too old
+- **One-Click dsh Setup**: Installs \`@deepseek-ai/dsh\` globally via npm on first launch if it is not already installed
 - **Immersive Web UI**: The web interface fills the entire window; a small handle at the top reveals a floating toolbar (App / CLI tabs, status indicator, version badge) on hover or click, and auto-hides when the pointer moves away
-- **Real-time CLI Logs**: The "CLI" tab streams npx stdout/stderr in real time
+- **Real-time CLI Logs**: The "CLI" tab streams dsh stdout/stderr in real time
 - **Process Management**: Start / Stop / Restart / Upgrade / Clear / Copy actions
-  - **Upgrade**: Runs \`npx --yes @deepseek-ai/dsh@latest --version\` to fetch the newest version, then automatically restarts the service
+  - **Upgrade**: Runs \`npm update -g @deepseek-ai/dsh\` to update the global dsh, then automatically restarts the service
 - **Clean Exit**: Closing the window destroys the entire process tree (SIGTERM → SIGKILL on macOS/Linux, \`taskkill /T\` on Windows)
 - **Version Display**: Shows the installed dsh CLI version in the topbar (e.g., "dsh v0.1.0-rc.6")
 
 ## Prerequisites
 
-- **Node.js 22.19.0+** and npm (required — the app uses \`npx\` to run dsh, and dsh itself requires Node.js 22.19.0+)
+- **Node.js 22.19.0+** and npm (required — dsh itself requires Node.js 22.19.0+; the app checks the version on launch and guides you if it is missing or too old)
   - Download: https://nodejs.org/
-  - Verify: \`node --version\` and \`npx --version\` should both work in your terminal
+  - Verify: \`node --version\` should output v22.19.0 or newer
+  - The \`dsh\` CLI is installed globally by the app on first launch (\`npm install -g @deepseek-ai/dsh\`), so you do not need to install it yourself
 
 ## Installation
 
@@ -99,13 +102,15 @@ npm run tauri build
 
 The app is a thin native wrapper:
 
-1. **Startup**: Spawns \`npx --yes @deepseek-ai/dsh web\` as a child process
-2. **Readiness Check**: Polls http://127.0.0.1:3080 every 300ms until the server responds
-3. **Web UI**: Embeds the web interface in a Tauri webview (full window)
-4. **CLI Logs**: Pipes npx stdout/stderr to the "CLI" tab in real time
-5. **Process Tree**: The app tracks the entire process tree (cmd → npx → node → dsh) and kills it cleanly on exit
+1. **Environment Check**: Runs \`node --version\` and verifies it meets 22.19.0+ (shows a clear error with a Node.js download link otherwise)
+2. **dsh Setup**: Runs \`dsh --version\`; if missing, installs \`@deepseek-ai/dsh\` globally via \`npm install -g\`
+3. **Startup**: Spawns \`dsh web\` as a child process
+4. **Readiness Check**: Polls http://127.0.0.1:3080 every 300ms until the server responds
+5. **Web UI**: Embeds the web interface in a Tauri webview (full window)
+6. **CLI Logs**: Pipes dsh stdout/stderr to the "CLI" tab in real time
+7. **Process Tree**: The app tracks the entire process tree and kills it cleanly on exit
 
-On Windows, the app uses \`cmd /C\` to launch npx (resolving the \`.cmd\` shim) and sets \`CREATE_NO_WINDOW\` to hide the console window. It also merges standard Node.js install directories into the child PATH to handle GUI-launched processes with stale environments.
+On Windows, the app uses \`cmd /C\` to launch dsh/npm/node (resolving the \`.cmd\` shim) and sets \`CREATE_NO_WINDOW\` to hide the console window. It also merges standard Node.js install directories and the global npm bin directory (\`%APPDATA%\\npm\`) into the child PATH to handle GUI-launched processes with stale environments.
 
 ## License
 

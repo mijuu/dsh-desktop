@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -15,24 +15,26 @@
       <nav class="tabs">
         <button class="tab active" data-tab="app">App</button>
         <button class="tab" data-tab="cli">CLI</button>
+        <button class="tab" data-tab="plugins" data-i18n="tab.plugins">Plugins</button>
       </nav>
       <div class="status">
         <span class="dot" id="status-dot"></span>
-        <span id="status-text">启动中…</span>
+        <span id="status-text" data-i18n="status.starting">Starting…</span>
       </div>
-      <button class="bar-close" id="bar-close" title="隐藏工具栏">×</button>
+      <button class="bar-close" id="bar-close" data-i18n-title="bar.close" title="Hide toolbar">×</button>
     </header>
 
-    <div class="grabber" id="grabber" title="显示工具栏"></div>
+    <div class="grabber" id="grabber" data-i18n-title="bar.show" title="Show toolbar"></div>
 
     <main>
       <section class="panel active" id="panel-app">
         <div class="app-frame">
           <div class="loading" id="loading">
             <div class="spinner" id="loading-spinner"></div>
-            <p id="loading-text">正在启动 npx @deepseek-ai/dsh web …</p>
-            <p class="hint" id="loading-hint" hidden>可在上方 CLI 页签查看详细日志，安装好依赖后可重试。</p>
-            <button class="retry-btn" id="btn-retry" hidden>重试启动</button>
+            <p id="loading-text" data-i18n="loading.starting">Starting dsh web…</p>
+            <p class="hint" id="loading-hint" data-i18n="loading.hint" hidden>Check the CLI tab for detailed logs, then retry after fixing dependencies.</p>
+            <button class="retry-btn" id="btn-retry" data-i18n="btn.retry" hidden>Retry</button>
+            <button class="retry-btn" id="btn-nodejs" data-i18n="btn.nodejs" hidden>Open Node.js website</button>
           </div>
           <iframe id="app-iframe" src="about:blank" title="DSH Desktop"></iframe>
         </div>
@@ -40,15 +42,32 @@
 
       <section class="panel" id="panel-cli">
         <div class="cli-toolbar">
-          <button id="btn-start">启动</button>
-          <button id="btn-stop">停止</button>
-          <button id="btn-restart">重启</button>
-          <button id="btn-upgrade">升级</button>
+          <button id="btn-start" data-i18n="btn.start">Start</button>
+          <button id="btn-stop" data-i18n="btn.stop">Stop</button>
+          <button id="btn-restart" data-i18n="btn.restart">Restart</button>
+          <button id="btn-upgrade" data-i18n="btn.upgrade">Upgrade</button>
           <span class="spacer"></span>
-          <button id="btn-clear">清空</button>
-          <button id="btn-copy">复制</button>
+          <button id="btn-clear" data-i18n="btn.clear">Clear</button>
+          <button id="btn-copy" data-i18n="btn.copy">Copy</button>
         </div>
         <pre class="log" id="log"></pre>
+      </section>
+
+      <section class="panel" id="panel-plugins">
+        <div class="plugins-toolbar">
+          <input
+            type="text"
+            id="plugin-name"
+            data-i18n-placeholder="plugins.input"
+            placeholder="Enter npm package name, e.g. @scope/name"
+            spellcheck="false"
+          />
+          <button id="btn-add-plugin" data-i18n="btn.install">Install</button>
+          <span class="spacer"></span>
+          <button id="btn-refresh-plugins" data-i18n="btn.refresh">Refresh</button>
+        </div>
+        <div class="plugins-list" id="plugins-list"></div>
+        <p class="plugins-hint" data-i18n="plugins.hint">Restart the service after installing / uninstalling plugins. Installation logs are in the CLI tab.</p>
       </section>
     </main>
   </body>

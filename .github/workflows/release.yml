@@ -72,6 +72,9 @@ jobs:
           name: ${{ matrix.artifact }}
           path: |
             src-tauri/target/release/bundle/**/*.dmg
+            # macOS jobs build with --target <triple>, so bundles land under
+            # target/<triple>/release/bundle instead of target/release/bundle.
+            src-tauri/target/*-apple-darwin/release/bundle/**/*.dmg
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.deb

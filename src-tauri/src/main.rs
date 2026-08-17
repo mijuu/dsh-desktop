@@ -916,12 +916,14 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             // macOS: clicking the Dock icon after the window was hidden
-            // (close-to-Dock) brings the window back.
+            // (close-to-Dock) brings the window back. The Reopen variant only
+            // exists on macOS (cfg-gated in tauri), so the whole arm must be
+            // cfg-gated or Windows/Linux builds fail to compile.
+            #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {
                 has_visible_windows,
                 ..
             } => {
-                #[cfg(target_os = "macos")]
                 if !has_visible_windows {
                     if let Some(window) = app_handle.get_webview_window("main") {
                         let _ = window.show();

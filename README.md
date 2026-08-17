@@ -28,7 +28,8 @@ Think of it as a native shell that wraps \`dsh web\` with process management, re
 - **Environment Check**: Verifies Node.js 22.19.0+ on launch and prompts with a clear message (and a "Open Node.js website" button) when Node.js is missing or too old
 - **One-Click dsh Setup**: Installs \`@deepseek-ai/dsh\` globally via npm on first launch if it is not already installed
 - **Immersive Web UI**: The web interface fills the entire window; a small handle at the top reveals a floating toolbar (App / CLI tabs, status indicator, version badge) on hover or click, and auto-hides when the pointer moves away
-- **Real-time CLI Logs**: The "CLI" tab streams dsh stdout/stderr in real time
+- **Built-in Interactive CLI Terminal**: The "CLI" tab is a real terminal (xterm + PTY). Type commands, run \`dsh\`/\`npm\` directly, and press Ctrl+C to interrupt. The shell follows your login shell (\`$SHELL\`; zsh by default on macOS), so your aliases and PATH just work
+- **Plugin Management**: The "Plugins" tab installs/uninstalls profile plugins via \`dsh plugin --profile web add/remove <package>\`, executed in the CLI terminal with live progress and Ctrl+C support
 - **Process Management**: Start / Stop / Restart / Upgrade / Clear / Copy actions
   - **Upgrade**: Runs \`npm update -g @deepseek-ai/dsh\` to update the global dsh, then automatically restarts the service
 - **Clean Exit**: Closing the window destroys the entire process tree (SIGTERM → SIGKILL on macOS/Linux, \`taskkill /T\` on Windows)
@@ -78,9 +79,10 @@ Think of it as a native shell that wraps \`dsh web\` with process management, re
 1. **Launch the app** — it will automatically start the dsh web server
 2. **Wait for "Ready"** — the status indicator turns green and shows the server URL
 3. **Interact with the Web UI** — use the app normally (the web interface fills the window)
-4. **View CLI logs** — hover over or click the top handle to reveal the toolbar, then switch to the "CLI" tab
-5. **Upgrade dsh** — click the "Upgrade" button in the toolbar to fetch the latest version and restart
-6. **Stop/Restart** — use the toolbar buttons to control the server process
+4. **Use the CLI terminal** — hover over or click the top handle to reveal the toolbar, then switch to the "CLI" tab. It is a full interactive shell: run \`dsh web\`, \`dsh plugin --profile web add <package>\`, or any command, and press Ctrl+C to stop the foreground process
+5. **Manage plugins** — open the "Plugins" tab, enter a package name (e.g. \`github:owner/repo\`), and click Install. The command runs in the CLI terminal with live progress
+6. **Upgrade dsh** — click the "Upgrade" button in the toolbar to fetch the latest version and restart
+7. **Stop/Restart** — use the toolbar buttons to control the server process
 
 ## Development
 
@@ -107,7 +109,7 @@ The app is a thin native wrapper:
 3. **Startup**: Spawns \`dsh web\` as a child process
 4. **Readiness Check**: Polls http://127.0.0.1:3080 every 300ms until the server responds
 5. **Web UI**: Embeds the web interface in a Tauri webview (full window)
-6. **CLI Logs**: Pipes dsh stdout/stderr to the "CLI" tab in real time
+6. **CLI Terminal**: Runs an interactive shell in a PTY (via portable-pty, routed through \`fnm exec\` so node/npm/dsh are on PATH); keystrokes from the xterm frontend are forwarded to the PTY, and output streams back in real time. Install/upgrade/plugin tasks run through this same terminal
 7. **Process Tree**: The app tracks the entire process tree and kills it cleanly on exit
 
 On Windows, the app uses \`cmd /C\` to launch dsh/npm/node (resolving the \`.cmd\` shim) and sets \`CREATE_NO_WINDOW\` to hide the console window. It also merges standard Node.js install directories and the global npm bin directory (\`%APPDATA%\\npm\`) into the child PATH to handle GUI-launched processes with stale environments.

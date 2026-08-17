@@ -28,7 +28,8 @@ DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太�
 - **环境检查**：启动时校验 Node.js 22.19.0+，版本缺失或过低时给出清晰提示（附「打开 Node.js 官网」按钮）
 - **一键安装 dsh**：首次启动时若未安装，自动通过 npm 全局安装 \`@deepseek-ai/dsh\`
 - **沉浸式 Web UI**：Web 界面铺满整个窗口；顶部小抓手悬停/点击可唤出悬浮工具栏（App/CLI 页签、状态指示灯、版本徽章），移开自动隐藏
-- **实时 CLI 日志**：「CLI」页签实时显示 dsh 的 stdout/stderr
+- **内置交互式 CLI 终端**：「CLI」页签是一个真正的终端（xterm + PTY），可以直接输入命令、运行 `dsh`/`npm`，按 Ctrl+C 中断。shell 跟随你的登录 shell（`$SHELL`；macOS 默认 zsh），别名和 PATH 配置直接生效
+- **插件管理**：「插件」页签通过 `dsh plugin --profile web add/remove <package>` 安装/卸载 profile 插件，命令在 CLI 终端中执行，实时显示进度且支持 Ctrl+C
 - **进程管理**：启动 / 停止 / 重启 / 升级 / 清空 / 复制
   - **升级**：运行 \`npm update -g @deepseek-ai/dsh\` 更新全局 dsh，然后自动重启服务
 - **干净退出**：关闭窗口时销毁整个进程树（macOS/Linux 用 SIGTERM → SIGKILL，Windows 用 \`taskkill /T\`）
@@ -78,9 +79,10 @@ DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太�
 1. **启动应用** — 会自动启动 dsh web 服务
 2. **等待就绪** — 状态指示灯变绿并显示服务地址
 3. **使用 Web UI** — 正常使用应用（Web 界面铺满窗口）
-4. **查看 CLI 日志** — 悬停或点击顶部抓手唤出工具栏，切换到「CLI」页签
-5. **升级 dsh** — 点击工具栏的「升级」按钮拉取最新版本并重启
-6. **停止/重启** — 使用工具栏按钮控制服务进程
+4. **使用 CLI 终端** — 悬停或点击顶部抓手唤出工具栏，切换到「CLI」页签。这是一个完整的交互式 shell：可以运行 `dsh web`、`dsh plugin --profile web add <package>` 或任意命令，按 Ctrl+C 停止前台进程
+5. **管理插件** — 打开「插件」页签，输入包名（如 `github:owner/repo`），点击安装。命令会在 CLI 终端中实时显示进度
+6. **升级 dsh** — 点击工具栏的「升级」按钮拉取最新版本并重启
+7. **停止/重启** — 使用工具栏按钮控制服务进程
 
 ## 开发
 
@@ -107,7 +109,7 @@ npm run tauri build
 3. **启动**：生成子进程运行 \`dsh web\`
 4. **就绪检测**：每 300ms 轮询 http://127.0.0.1:3080 直到服务响应
 5. **Web UI**：在 Tauri webview 中嵌入 Web 界面（全窗口）
-6. **CLI 日志**：将 dsh 的 stdout/stderr 实时管道到「CLI」页签
+6. **CLI 终端**：在 PTY 中运行交互式 shell（portable-pty，经 `fnm exec` 路由以保证 node/npm/dsh 在 PATH 中）；xterm 前端的按键转发到 PTY，输出实时流回。安装/升级/插件任务都通过这个终端执行
 7. **进程树**：应用追踪整个进程树，退出时干净地杀死
 
 在 Windows 上，应用使用 \`cmd /C\` 启动 dsh/npm/node（解析 \`.cmd\` 批处理文件）并设置 \`CREATE_NO_WINDOW\` 隐藏控制台窗口。同时将标准 Node.js 安装目录和 npm 全局 bin 目录（\`%APPDATA%\\npm\`）合并到子进程 PATH，解决 GUI 启动的进程环境变量过旧的问题。

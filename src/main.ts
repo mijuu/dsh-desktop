@@ -1,6 +1,9 @@
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 type Lang = "en" | "zh";
 
@@ -36,17 +39,14 @@ const I18N: Record<Lang, Record<string, string>> = {
     "btn.copy": "Copy",
     "btn.install": "Install",
     "btn.refresh": "Refresh",
-    "plugins.input": "Enter npm package name, e.g. @scope/name",
+    "plugins.input": "Enter package, e.g. @scope/name or github:user/repo",
     "plugins.hint": "Restart the service after installing / uninstalling plugins. Installation logs are in the CLI tab.",
     "plugins.empty": "No plugins yet. Enter a package name and click Install.",
     "plugins.loadFailed": "Failed to load plugin list: ",
     "plugins.remove": "Uninstall",
     "plugins.confirmRemove": "Confirm",
     "plugins.enterName": "Please enter a package name.",
-    "plugins.installed": "Plugin {name} installed. Restart to take effect.",
-    "plugins.installFailed": "Failed to install plugin: ",
-    "plugins.uninstalled": "Plugin {name} uninstalled. Restart to take effect.",
-    "plugins.uninstallFailed": "Failed to uninstall plugin: ",
+    "plugins.invalidName": "Invalid package name.",
     "log.stopService": "Stopping service\u2026",
     "log.notOwned": "This service was not started by this app, left running.",
     "log.waitingPort": "Waiting for port {port}\u2026",
@@ -91,17 +91,14 @@ const I18N: Record<Lang, Record<string, string>> = {
     "btn.copy": "\u590d\u5236",
     "btn.install": "\u5b89\u88c5",
     "btn.refresh": "\u5237\u65b0",
-    "plugins.input": "\u8f93\u5165 npm \u5305\u540d\uff0c\u5982 @scope/name",
+    "plugins.input": "\u8f93\u5165\u5305\uff0c\u5982 @scope/name \u6216 github:user/repo",
     "plugins.hint": "\u5b89\u88c5 / \u5378\u8f7d\u63d2\u4ef6\u540e\u9700\u91cd\u542f\u670d\u52a1\u624d\u80fd\u751f\u6548\uff1b\u5b89\u88c5\u8fc7\u7a0b\u65e5\u5fd7\u89c1\u300cCLI\u300d\u9875\u7b7e\u3002",
     "plugins.empty": "\u6682\u65e0\u63d2\u4ef6\uff0c\u8f93\u5165\u5305\u540d\u540e\u70b9\u51fb\u300c\u5b89\u88c5\u300d\u3002",
     "plugins.loadFailed": "\u52a0\u8f7d\u63d2\u4ef6\u5217\u8868\u5931\u8d25\uff1a",
     "plugins.remove": "\u5378\u8f7d",
     "plugins.confirmRemove": "\u786e\u8ba4\u5378\u8f7d",
     "plugins.enterName": "\u8bf7\u8f93\u5165\u63d2\u4ef6\u5305\u540d\u3002",
-    "plugins.installed": "\u63d2\u4ef6 {name} \u5b89\u88c5\u5b8c\u6210\uff0c\u91cd\u542f\u670d\u52a1\u540e\u751f\u6548",
-    "plugins.installFailed": "\u5b89\u88c5\u63d2\u4ef6\u5931\u8d25\uff1a",
-    "plugins.uninstalled": "\u63d2\u4ef6 {name} \u5df2\u5378\u8f7d\uff0c\u91cd\u542f\u670d\u52a1\u540e\u751f\u6548",
-    "plugins.uninstallFailed": "\u5378\u8f7d\u63d2\u4ef6\u5931\u8d25\uff1a",
+    "plugins.invalidName": "\u65e0\u6548\u7684\u5305\u540d\u3002",
     "log.stopService": "\u505c\u6b62\u670d\u52a1\u2026",
     "log.notOwned": "\u8be5\u670d\u52a1\u975e\u672c\u5e94\u7528\u542f\u52a8\uff0c\u672a\u505c\u6b62",
     "log.waitingPort": "\u7b49\u5f85\u7aef\u53e3 {port} \u5c31\u7eea\u2026",
@@ -160,7 +157,6 @@ function q<T extends HTMLElement>(sel: string): T {
 
 const iframe = q<HTMLIFrameElement>("#app-iframe");
 const loading = q<HTMLDivElement>("#loading");
-const log = q<HTMLPreElement>("#log");
 const dot = q<HTMLSpanElement>("#status-dot");
 const statusText = q<HTMLSpanElement>("#status-text");
 const topbar = q<HTMLElement>("#topbar");
@@ -181,14 +177,9 @@ function setStatus(state: State, text: string): void {
 }
 
 function appendLog(line: string, kind: "out" | "err" | "sys"): void {
-  const span = document.createElement("span");
-  span.className = kind;
-  span.textContent = line + "\n";
-  log.appendChild(span);
-  while (log.childElementCount > 2000) {
-    if (log.firstElementChild) log.removeChild(log.firstElementChild);
-  }
-  log.scrollTop = log.scrollHeight;
+  const open = kind === "sys" ? "\x1b[90m" : kind === "err" ? "\x1b[91m" : "";
+  const close = kind === "out" ? "" : "\x1b[0m";
+  cliTerm?.write(open + line + close + "\r\n");
 }
 
 /** Switch the loading overlay between "starting", "error" and "stopped" states. */
@@ -365,46 +356,52 @@ async function upgrade(): Promise<void> {
 }
 
 function clearLog(): void {
-  log.textContent = "";
+  cliTerm?.reset();
 }
 
 async function copyLog(): Promise<void> {
   try {
-    await navigator.clipboard.writeText(log.textContent || "");
+    cliTerm?.selectAll();
+    const text = cliTerm?.getSelection() ?? "";
+    cliTerm?.clearSelection();
+    await navigator.clipboard.writeText(text);
     appendLog("> " + t("log.copied"), "sys");
   } catch {
     appendLog("> " + t("log.copyFailed"), "err");
   }
 }
 
-function setupTabs(): void {
-  const tabs = document.querySelectorAll<HTMLButtonElement>(".tab");
+function switchTab(key: string): void {
   const panels: Record<string, HTMLElement> = {
     app: q("#panel-app"),
     cli: q("#panel-cli"),
     plugins: q("#panel-plugins"),
   };
-  tabs.forEach((t) => {
-    t.addEventListener("click", () => {
-      tabs.forEach((x) => x.classList.remove("active"));
-      t.classList.add("active");
-      const key = t.dataset.tab || "app";
-      Object.keys(panels).forEach((k) => panels[k].classList.toggle("active", k === key));
-      if (key === "cli" || key === "plugins") {
-        cliMode = true;
-        showBar();
-        if (key === "plugins") refreshPlugins();
-      } else {
-        cliMode = false;
-        scheduleHide();
-      }
-    });
+  document
+    .querySelectorAll<HTMLButtonElement>(".tab")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tab === key));
+  Object.keys(panels).forEach((k) => panels[k].classList.toggle("active", k === key));
+  window.requestAnimationFrame(fitTerminals);
+  if (key === "cli" || key === "plugins") {
+    cliMode = true;
+    showBar();
+    if (key === "plugins") refreshPlugins();
+  } else {
+    cliMode = false;
+    scheduleHide();
+  }
+}
+
+function setupTabs(): void {
+  document.querySelectorAll<HTMLButtonElement>(".tab").forEach((t) => {
+    t.addEventListener("click", () => switchTab(t.dataset.tab || "app"));
   });
 }
 
 async function setupEvents(): Promise<void> {
-  await listen<string>("server:stdout", (e) => appendLog(e.payload, "out"));
-  await listen<string>("server:stderr", (e) => appendLog(e.payload, "err"));
+  await listen<number[]>("term:data", (e) => {
+    cliTerm?.write(new Uint8Array(e.payload));
+  });
   await listen("server:ready", () => {
     ready = true;
     setStatus("running", t("status.running") + APP_URL);
@@ -428,16 +425,9 @@ async function setupEvents(): Promise<void> {
     if (!ready) setLoading(t("loading.stopped"), { spinner: false });
     setStatus("stopped", t("status.stopped"));
   });
-  await listen<string>("upgrade:stdout", (e2) => appendLog(e2.payload, "out"));
-  await listen<string>("upgrade:stderr", (e2) => appendLog(e2.payload, "err"));
-  await listen<string>("install:stdout", (e2) => appendLog(e2.payload, "out"));
-  await listen<string>("install:stderr", (e2) => appendLog(e2.payload, "err"));
   await listen<string>("install:status", (e2) => {
     if (!ready) setLoading(e2.payload);
   });
-  await listen<string>("plugin:stdout", (e2) => appendLog(e2.payload, "out"));
-  await listen<string>("plugin:stderr", (e2) => appendLog(e2.payload, "err"));
-  await listen<string>("plugin:status", (e2) => appendLog("> " + e2.payload, "sys"));
 }
 
 function setupButtons(): void {
@@ -522,6 +512,14 @@ async function refreshPlugins(): Promise<void> {
   }
 }
 
+function validPackageName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    !name.startsWith(".") &&
+    /^[a-zA-Z0-9@/:._\-+#^~%=?]+$/.test(name)
+  );
+}
+
 async function addPlugin(): Promise<void> {
   const input = q<HTMLInputElement>("#plugin-name");
   const name = input.value.trim();
@@ -529,18 +527,25 @@ async function addPlugin(): Promise<void> {
     appendLog("> " + t("plugins.enterName"), "sys");
     return;
   }
+  if (!validPackageName(name)) {
+    appendLog("> " + t("plugins.invalidName"), "err");
+    return;
+  }
   const btn = q<HTMLButtonElement>("#btn-add-plugin");
   btn.disabled = true;
+  input.value = "";
+  switchTab("cli");
+  const cmd = `dsh plugin --profile web add '${name}'\r\n`;
   try {
-    await invoke("add_plugin", { name });
-    appendLog("> " + t("plugins.installed", { name }), "sys");
-    input.value = "";
-    await refreshPlugins();
+    await invoke("term_input", {
+      data: Array.from(new TextEncoder().encode(cmd)),
+    });
   } catch (e) {
-    appendLog("> " + t("plugins.installFailed") + String(e), "err");
-  } finally {
-    btn.disabled = false;
+    appendLog("> " + String(e), "err");
   }
+  // The command runs in the shell; refresh once it has likely finished.
+  window.setTimeout(() => void refreshPlugins(), 10000);
+  btn.disabled = false;
 }
 
 /** Two-step confirm removal: first click arms, second click confirms. */
@@ -559,17 +564,20 @@ async function handleRemove(name: string, btn: HTMLButtonElement): Promise<void>
     return;
   }
   btn.disabled = true;
+  switchTab("cli");
+  const cmd = `dsh plugin --profile web remove '${name}'\r\n`;
   try {
-    await invoke("remove_plugin", { name });
-    appendLog("> " + t("plugins.uninstalled", { name }), "sys");
-    await refreshPlugins();
+    await invoke("term_input", {
+      data: Array.from(new TextEncoder().encode(cmd)),
+    });
   } catch (e) {
-    appendLog("> " + t("plugins.uninstallFailed") + String(e), "err");
-    btn.disabled = false;
-    delete btn.dataset.confirm;
-    btn.textContent = t("plugins.remove");
-    btn.classList.remove("confirm");
+    appendLog("> " + String(e), "err");
   }
+  window.setTimeout(() => void refreshPlugins(), 10000);
+  delete btn.dataset.confirm;
+  btn.textContent = t("plugins.remove");
+  btn.classList.remove("confirm");
+  btn.disabled = false;
 }
 
 /** Show the DeepSeek Harness (dsh) version in the topbar, not the app's own. */
@@ -583,6 +591,36 @@ async function refreshDshVersion(): Promise<void> {
   }
 }
 
+// ===== CLI 终端（交互式 shell） =====
+let cliTerm: Terminal | null = null;
+let cliTermFit: FitAddon | null = null;
+
+function initTerminals(): void {
+  const el = q<HTMLDivElement>("#cli-term");
+  cliTerm = new Terminal({
+    fontSize: 12,
+    cursorBlink: true,
+    theme: { background: "#0d1117", foreground: "#e6edf3" },
+  });
+  cliTermFit = new FitAddon();
+  cliTerm.loadAddon(cliTermFit);
+  cliTerm.open(el);
+  cliTermFit.fit();
+  cliTerm.onData((data) => {
+    const bytes = Array.from(new TextEncoder().encode(data));
+    invoke("term_input", { data: bytes }).catch(() => {});
+  });
+  cliTerm.onResize(({ cols, rows }) => {
+    if (cols > 0 && rows > 0) {
+      invoke("term_resize", { cols, rows }).catch(() => {});
+    }
+  });
+}
+
+function fitTerminals(): void {
+  if (q<HTMLElement>("#panel-cli").classList.contains("active")) cliTermFit?.fit();
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   applyTranslations();
   // 同步语言给 Rust 端，保证前后端消息语言一致
@@ -590,6 +628,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupTabs();
   setupButtons();
   setupBar();
+  initTerminals();
+  window.addEventListener("resize", fitTerminals);
+  invoke("spawn_shell").catch((e) => appendLog("> " + String(e), "err"));
   // The bar is visible at startup so users discover the controls,
   // then auto-hides after 5s (or on mouseleave / × button).
   showBar();

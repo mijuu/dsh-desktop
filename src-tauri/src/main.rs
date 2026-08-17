@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
 use tauri::{AppHandle, Emitter, Manager};
 
 #[cfg(unix)]
@@ -72,6 +73,12 @@ fn url() -> String {
 
 struct ServerState {
     pid: Mutex<Option<u32>>,
+}
+
+/// State for the interactive shell running in the CLI terminal.
+struct ShellState {
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -217,24 +224,222 @@ fn augment_path_with_node(c: &mut Command) {
     c.env("PATH", path);
 }
 
-fn dsh_command() -> Command {
-    let mut c = base_cmd("dsh");
-    c.args(["web"]);
+/// Build a PTY command for the given binary, routing through fnm on
+/// macOS/Linux so it also works when launched from the GUI.
+fn pty_base_cmd(bin: &str) -> CommandBuilder {
+    #[cfg(not(windows))]
+    {
+        for fnm in [
+            "/opt/homebrew/bin/fnm",
+            "/opt/homebrew/opt/fnm/bin/fnm",
+            "/usr/local/bin/fnm",
+        ] {
+            if Path::new(fnm).is_file() {
+                let mut c = CommandBuilder::new(fnm);
+                c.args(&["exec", "--using", "default", "--", bin]);
+                return c;
+            }
+        }
+    }
+    CommandBuilder::new(bin)
+}
+
+fn dsh_pty_command() -> CommandBuilder {
+    let mut c = pty_base_cmd("dsh");
+    c.args(&["web"]);
     c
 }
 
-fn upgrade_command() -> Command {
-    let mut c = base_cmd("npm");
-    c.args(["update", "-g", "@deepseek-ai/dsh"]);
+fn upgrade_pty_command() -> CommandBuilder {
+    let mut c = pty_base_cmd("npm");
+    c.args(&["update", "-g", "@deepseek-ai/dsh"]);
     c.env("npm_config_update_notifier", "false");
     c
 }
 
-fn install_dsh_command() -> Command {
-    let mut c = base_cmd("npm");
-    c.args(["install", "-g", "@deepseek-ai/dsh"]);
+fn install_dsh_pty_command() -> CommandBuilder {
+    let mut c = pty_base_cmd("npm");
+    c.args(&["install", "-g", "@deepseek-ai/dsh"]);
     c.env("npm_config_update_notifier", "false");
     c
+}
+
+/// Spawn a command in a PTY and return its output reader and child handle.
+fn spawn_pty(
+    cmd: CommandBuilder,
+) -> Result<(Box<dyn Read + Send>, Box<dyn PtyChild + Send + Sync>), String> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("{}: {e}", tr("Failed to open terminal", "打开终端失败")))?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("{}: {e}", tr("Failed to launch command", "启动命令失败")))?;
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("{}: {e}", tr("Failed to read terminal", "读取终端失败")))?;
+    Ok((reader, child))
+}
+
+/// Run a PTY command to completion, streaming its raw bytes to the given
+/// frontend event, and report whether it exited successfully.
+fn run_pty(app: &AppHandle, cmd: CommandBuilder, event: &'static str) -> Result<bool, String> {
+    let (mut reader, mut child) = spawn_pty(cmd)?;
+    let mut buf = [0u8; 4096];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let _ = app.emit(event, &buf[..n].to_vec());
+            }
+            Err(_) => break,
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|e| format!("{}: {e}", tr("Failed to wait for command", "等待命令结束失败")))?;
+    Ok(status.success())
+}
+
+/// Stream a PTY reader's output to the frontend on a background thread.
+fn stream_pty_output(app: AppHandle, mut reader: Box<dyn Read + Send>, event: &'static str) {
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let _ = app.emit(event, &buf[..n].to_vec());
+                }
+                Err(_) => break,
+            }
+        }
+    });
+}
+
+/// Build the interactive shell command for the CLI terminal. On macOS/Linux
+/// it routes through fnm so node/npm/dsh are on PATH even when launched from
+/// the GUI.
+fn shell_command() -> CommandBuilder {
+    #[cfg(not(windows))]
+    {
+        // Prefer the user's login shell ($SHELL), then zsh (macOS default
+        // since Catalina), then bash. This keeps the user's aliases/PATH/fnm
+        // init from ~/.zshrc (or ~/.bashrc) working inside the built-in CLI.
+        let shell = std::env::var("SHELL")
+            .ok()
+            .filter(|s| Path::new(s).is_file())
+            .or_else(|| {
+                Some("/bin/zsh".to_string()).filter(|p| Path::new(p).is_file())
+            })
+            .or_else(|| {
+                Some("/bin/bash".to_string()).filter(|p| Path::new(p).is_file())
+            })
+            .unwrap_or_else(|| "/bin/sh".to_string());
+
+        for fnm in [
+            "/opt/homebrew/bin/fnm",
+            "/opt/homebrew/opt/fnm/bin/fnm",
+            "/usr/local/bin/fnm",
+        ] {
+            if Path::new(fnm).is_file() {
+                let mut c = CommandBuilder::new(fnm);
+                c.args(&["exec", "--using", "default", "--", &shell]);
+                return c;
+            }
+        }
+        CommandBuilder::new(shell)
+    }
+    #[cfg(windows)]
+    {
+        CommandBuilder::new("cmd.exe")
+    }
+}
+
+/// Spawn the interactive shell for the CLI terminal and start streaming its
+/// output. Called once at startup.
+#[tauri::command]
+fn spawn_shell(app: AppHandle) -> Result<(), String> {
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("{}: {e}", tr("Failed to open terminal", "打开终端失败")))?;
+
+    let mut child = pair
+        .slave
+        .spawn_command(shell_command())
+        .map_err(|e| format!("{}: {e}", tr("Failed to launch shell", "启动 shell 失败")))?;
+
+    let reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("{}: {e}", tr("Failed to read terminal", "读取终端失败")))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("{}: {e}", tr("Failed to write to terminal", "写入终端失败")))?;
+
+    {
+        let state = app.state::<ShellState>();
+        *state.master.lock().unwrap() = Some(pair.master);
+        *state.writer.lock().unwrap() = Some(writer);
+    }
+
+    stream_pty_output(app.clone(), reader, "term:data");
+
+    // Clean up state if the shell itself exits.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let state = app.state::<ShellState>();
+        *state.master.lock().unwrap() = None;
+        *state.writer.lock().unwrap() = None;
+    });
+
+    Ok(())
+}
+
+/// Forward keystrokes from the frontend terminal to the shell's PTY.
+#[tauri::command]
+fn term_input(app: AppHandle, data: Vec<u8>) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    let mut guard = state.writer.lock().unwrap();
+    if let Some(writer) = guard.as_mut() {
+        writer
+            .write_all(&data)
+            .map_err(|e| format!("{}: {e}", tr("Failed to write to terminal", "写入终端失败")))?;
+        let _ = writer.flush();
+    }
+    Ok(())
+}
+
+/// Resize the shell's PTY to match the frontend terminal.
+#[tauri::command]
+fn term_resize(app: AppHandle, rows: u16, cols: u16) -> Result<(), String> {
+    let state = app.state::<ShellState>();
+    let guard = state.master.lock().unwrap();
+    if let Some(master) = guard.as_ref() {
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("{}: {e}", tr("Failed to resize terminal", "调整终端大小失败")))?;
+    }
+    Ok(())
 }
 
 fn extract_version(lines: &[String]) -> Option<String> {
@@ -332,53 +537,6 @@ fn try_dsh_version() -> Option<String> {
     extract_version(&[out])
 }
 
-/// Run a command, streaming its stdout/stderr lines as `<prefix>:stdout` /
-/// `<prefix>:stderr` events, and report whether it exited successfully.
-fn stream_and_wait(app: &AppHandle, mut cmd: Command, prefix: &'static str) -> Result<bool, String> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        cmd.process_group(0);
-    }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("{}: {e}", tr("Failed to launch command", "无法启动命令")))?;
-
-    if let Some(stdout) = child.stdout.take() {
-        let app = app.clone();
-        let event = format!("{prefix}:stdout");
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(l) => {
-                        let _ = app.emit(&event, &l);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let app = app.clone();
-        let event = format!("{prefix}:stderr");
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                match line {
-                    Ok(l) => {
-                        let _ = app.emit(&event, &l);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("{}: {e}", tr("Failed to wait for command", "等待命令结束失败")))?;
-    Ok(status.success())
-}
-
 fn is_port_open(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).is_ok()
 }
@@ -413,44 +571,12 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
         return Ok(status_of(true));
     }
 
-    let mut cmd = dsh_command();
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        cmd.process_group(0);
-    }
-
-    let mut child = cmd
-        .spawn()
+    let (reader, mut child) = spawn_pty(dsh_pty_command())
         .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
-    let pid = child.id();
+    let pid = child.process_id().unwrap_or(0);
 
-    if let Some(stdout) = child.stdout.take() {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                match line {
-                    Ok(l) => {
-                        let _ = app.emit("server:stdout", l);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-    if let Some(stderr) = child.stderr.take() {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines() {
-                match line {
-                    Ok(l) => {
-                        let _ = app.emit("server:stderr", l);
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
+    // Stream the PTY output (merged stdout/stderr) to the CLI terminal.
+    stream_pty_output(app.clone(), reader, "term:data");
 
     {
         let state = app.state::<ServerState>();
@@ -462,7 +588,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
     {
         let app = app.clone();
         std::thread::spawn(move || {
-            let code = child.wait().ok().and_then(|s| s.code());
+            let code = child.wait().ok().map(|s| s.exit_code() as i32);
             let state = app.state::<ServerState>();
             let mut guard = state.pid.lock().unwrap();
             *guard = None;
@@ -530,7 +656,7 @@ fn restart_server(app: AppHandle) -> Result<Status, String> {
 #[tauri::command]
 async fn upgrade_dsh(app: AppHandle) -> Result<UpgradeResult, String> {
     // Update the global dsh installation, then read the resulting version.
-    let ok = stream_and_wait(&app, upgrade_command(), "upgrade")?;
+    let ok = run_pty(&app, upgrade_pty_command(), "term:data")?;
     std::thread::sleep(Duration::from_millis(150));
     let version = try_dsh_version().unwrap_or_else(|| "unknown".to_string());
 
@@ -649,7 +775,7 @@ async fn ensure_dsh(app: AppHandle) -> Result<DshInstallResult, String> {
             "正在安装 @deepseek-ai/dsh（首次安装可能需要几分钟）…",
         ),
     );
-    let ok = stream_and_wait(&app, install_dsh_command(), "install")?;
+    let ok = run_pty(&app, install_dsh_pty_command(), "term:data")?;
     if !ok {
         return Err(tr(
             "Failed to install dsh: npm install command did not succeed. Check the CLI logs.",
@@ -695,15 +821,6 @@ fn open_nodejs_website() -> Result<(), String> {
 
 // ===== Plugin management =====
 
-/// Validate an npm package name to reject shell metacharacters.
-fn valid_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '@' | '/' | '.' | '_' | '~' | '-')
-        })
-}
-
 /// Read the web profile's package.json as JSON.
 fn read_profile_manifest() -> Result<serde_json::Value, String> {
     let path = profile_dir().join("package.json");
@@ -719,79 +836,6 @@ fn read_profile_manifest() -> Result<serde_json::Value, String> {
     })?;
     serde_json::from_str(&content)
         .map_err(|e| format!("{}: {e}", tr("Failed to parse package.json", "解析 package.json 失败")))
-}
-
-/// Write the web profile's package.json (pretty-printed).
-fn write_profile_manifest(json: &serde_json::Value) -> Result<(), String> {
-    let path = profile_dir().join("package.json");
-    let content = serde_json::to_string_pretty(json)
-        .map_err(|e| format!("{}: {e}", tr("Failed to serialize package.json", "序列化 package.json 失败")))?;
-    std::fs::write(&path, content)
-        .map_err(|e| format!("{}: {e}", tr("Failed to write package.json", "写入 package.json 失败")))
-}
-
-/// Whether an installed package declares a dsh bundle (dsh.bundle.patch).
-fn plugin_is_bundle(name: &str) -> bool {
-    let pkg_path = profile_dir()
-        .join("node_modules")
-        .join(name)
-        .join("package.json");
-    let Ok(content) = std::fs::read_to_string(pkg_path) else {
-        return false;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    json.get("dsh")
-        .and_then(|d| d.get("bundle"))
-        .and_then(|b| b.get("patch"))
-        .is_some()
-}
-
-/// Add `name` to dsh.profile.bundles (idempotent).
-fn add_to_bundles(name: &str) -> Result<(), String> {
-    let mut json = read_profile_manifest()?;
-    let bundles = json
-        .pointer_mut("/dsh/profile/bundles")
-        .and_then(|v| v.as_array_mut())
-        .ok_or_else(|| {
-            tr(
-                "package.json is missing the dsh.profile.bundles field",
-                "package.json 缺少 dsh.profile.bundles 字段",
-            )
-        })?;
-    if !bundles.iter().any(|b| b.as_str() == Some(name)) {
-        bundles.push(serde_json::Value::String(name.to_string()));
-    }
-    write_profile_manifest(&json)
-}
-
-/// Remove `name` from dsh.profile.bundles (no-op when absent).
-fn remove_from_bundles(name: &str) -> Result<(), String> {
-    let mut json = read_profile_manifest()?;
-    if let Some(bundles) = json
-        .pointer_mut("/dsh/profile/bundles")
-        .and_then(|v| v.as_array_mut())
-    {
-        bundles.retain(|b| b.as_str() != Some(name));
-    }
-    write_profile_manifest(&json)
-}
-
-fn add_plugin_command(name: &str) -> Command {
-    let mut c = base_cmd("npm");
-    c.args(["install", name, "--save"]);
-    c.current_dir(profile_dir());
-    c.env("npm_config_update_notifier", "false");
-    c
-}
-
-fn remove_plugin_command(name: &str) -> Command {
-    let mut c = base_cmd("npm");
-    c.args(["uninstall", name]);
-    c.current_dir(profile_dir());
-    c.env("npm_config_update_notifier", "false");
-    c
 }
 
 /// List user-installed plugins (the profile's `dependencies`).
@@ -823,62 +867,6 @@ async fn list_plugins() -> Result<Vec<PluginInfo>, String> {
     Ok(plugins)
 }
 
-/// Install a plugin into the web profile and reconcile dsh.profile.bundles.
-#[tauri::command]
-async fn add_plugin(app: AppHandle, name: String) -> Result<(), String> {
-    let name = name.trim().to_string();
-    if !valid_package_name(&name) {
-        return Err(format!("{}: {name}", tr("Invalid package name", "无效的包名")));
-    }
-
-    let _ = app.emit(
-        "plugin:status",
-        format!("{} {name}", tr("Installing plugin", "正在安装插件")),
-    );
-    let ok = stream_and_wait(&app, add_plugin_command(&name), "plugin")?;
-    if !ok {
-        return Err(format!(
-            "{name}: {}",
-            tr(
-                "install failed: npm install command did not succeed. Check the CLI logs.",
-                "安装失败: npm install 命令未成功，请检查 CLI 日志"
-            )
-        ));
-    }
-
-    if plugin_is_bundle(&name) {
-        add_to_bundles(&name)?;
-    }
-    Ok(())
-}
-
-/// Remove a plugin from the web profile and reconcile dsh.profile.bundles.
-#[tauri::command]
-async fn remove_plugin(app: AppHandle, name: String) -> Result<(), String> {
-    let name = name.trim().to_string();
-    if !valid_package_name(&name) {
-        return Err(format!("{}: {name}", tr("Invalid package name", "无效的包名")));
-    }
-
-    let _ = app.emit(
-        "plugin:status",
-        format!("{} {name}", tr("Uninstalling plugin", "正在卸载插件")),
-    );
-    let ok = stream_and_wait(&app, remove_plugin_command(&name), "plugin")?;
-    if !ok {
-        return Err(format!(
-            "{name}: {}",
-            tr(
-                "uninstall failed: npm uninstall command did not succeed. Check the CLI logs.",
-                "卸载失败: npm uninstall 命令未成功，请检查 CLI 日志"
-            )
-        ));
-    }
-
-    remove_from_bundles(&name)?;
-    Ok(())
-}
-
 #[tauri::command]
 fn server_status(app: AppHandle) -> Status {
     let state = app.state::<ServerState>();
@@ -889,7 +877,14 @@ fn server_status(app: AppHandle) -> Status {
 fn main() {
     tauri::Builder::default()
         .manage(ServerState { pid: Mutex::new(None) })
+        .manage(ShellState {
+            master: Mutex::new(None),
+            writer: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
+            spawn_shell,
+            term_input,
+            term_resize,
             start_server,
             stop_server,
             restart_server,
@@ -900,9 +895,7 @@ fn main() {
             ensure_dsh,
             open_nodejs_website,
             set_ui_lang,
-            list_plugins,
-            add_plugin,
-            remove_plugin
+            list_plugins
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {

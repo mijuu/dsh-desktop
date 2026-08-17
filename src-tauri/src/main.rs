@@ -898,14 +898,38 @@ fn main() {
             list_plugins
         ])
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { .. } = event {
-                window.app_handle().exit(0);
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                #[cfg(target_os = "macos")]
+                {
+                    // Hide into the Dock instead of quitting: the server keeps
+                    // running and the app stays one click away (Reopen below).
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    window.app_handle().exit(0);
+                }
             }
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            // macOS: clicking the Dock icon after the window was hidden
+            // (close-to-Dock) brings the window back.
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } => {
+                #[cfg(target_os = "macos")]
+                if !has_visible_windows {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 let state = app_handle.state::<ServerState>();
                 let pid = {
                     let mut guard = state.pid.lock().unwrap();
@@ -915,5 +939,6 @@ fn main() {
                     kill_process_group(pid);
                 }
             }
+            _ => {}
         });
 }

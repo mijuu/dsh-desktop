@@ -170,6 +170,7 @@ let upgrading = false;
 let cliMode = false;
 let ready = false;
 let hideTimer: number | undefined;
+let startupErrorTimer: number | undefined;
 
 function setStatus(state: State, text: string): void {
   dot.className = "dot " + state;
@@ -246,6 +247,10 @@ function setupBar(): void {
 
 async function start(): Promise<void> {
   ready = false;
+  if (startupErrorTimer !== undefined) {
+    window.clearTimeout(startupErrorTimer);
+    startupErrorTimer = undefined;
+  }
   setStatus("starting", t("status.starting"));
   setLoading(t("loading.starting"));
   appendLog("$ dsh web", "sys");
@@ -403,6 +408,10 @@ async function setupEvents(): Promise<void> {
     cliTerm?.write(new Uint8Array(e.payload));
   });
   await listen("server:ready", () => {
+    if (startupErrorTimer !== undefined) {
+      window.clearTimeout(startupErrorTimer);
+      startupErrorTimer = undefined;
+    }
     ready = true;
     setStatus("running", t("status.running") + APP_URL);
     showApp();
@@ -411,6 +420,10 @@ async function setupEvents(): Promise<void> {
     if (!cliMode) scheduleHide();
   });
   await listen("server:timeout", () => {
+    if (startupErrorTimer !== undefined) {
+      window.clearTimeout(startupErrorTimer);
+      startupErrorTimer = undefined;
+    }
     showStartupError(t("err.startupTimeout"));
   });
   await listen<number | null>("server:exited", (e) => {
@@ -418,7 +431,16 @@ async function setupEvents(): Promise<void> {
       setStatus("stopped", t("status.exited"));
       appendLog("> " + t("log.processExited", { code: e.payload ?? 0 }), "sys");
     } else {
-      showStartupError(t("err.exitedEarly", { code: e.payload ?? 0 }));
+      // A restart kills the old process (and the `dsh web` launcher exits
+      // right after the server is up), so an exit event can arrive while
+      // `ready` is still false even though the new server is coming up
+      // fine. Wait a grace period; `server:ready` cancels this so a
+      // successful restart is not reported as a failed startup.
+      if (startupErrorTimer !== undefined) window.clearTimeout(startupErrorTimer);
+      startupErrorTimer = window.setTimeout(() => {
+        startupErrorTimer = undefined;
+        showStartupError(t("err.exitedEarly", { code: e.payload ?? 0 }));
+      }, 3000);
     }
   });
   await listen("server:stopped", () => {

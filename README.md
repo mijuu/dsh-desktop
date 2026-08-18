@@ -34,6 +34,7 @@ Think of it as a native shell that wraps \`dsh web\` with process management, re
   - **Upgrade**: Runs \`npm update -g @deepseek-ai/dsh\` to update the global dsh, then automatically restarts the service
 - **Clean Exit**: Closing the window destroys the entire process tree (SIGTERM → SIGKILL on macOS/Linux, \`taskkill /T\` on Windows)
 - **Version Display**: Shows the installed dsh CLI version in the topbar (e.g., "dsh v0.1.0-rc.6")
+- **Tiny Download**: Built on Tauri with the OS-provided webview instead of bundling a browser engine, so the macOS/Windows/Linux (.deb/.rpm) packages are only ~2 MB (Electron apps are typically 100+ MB) — faster to download and lighter on disk. (The Linux AppImage is larger because it bundles the WebKit runtime for portability across distros.)
 
 ## Prerequisites
 

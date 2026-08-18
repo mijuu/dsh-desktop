@@ -34,6 +34,7 @@ DeepSeek Harness 同时提供命令行界面和 Web UI，但分开管理不太�
   - **升级**：运行 \`npm update -g @deepseek-ai/dsh\` 更新全局 dsh，然后自动重启服务
 - **干净退出**：关闭窗口时销毁整个进程树（macOS/Linux 用 SIGTERM → SIGKILL，Windows 用 \`taskkill /T\`）
 - **版本显示**：在顶部工具栏显示已安装的 dsh CLI 版本（如 "dsh v0.1.0-rc.6"）
+- **安装包小巧**：基于 Tauri + 系统自带 WebView，不内置浏览器引擎，macOS / Windows / Linux（.deb/.rpm）安装包仅约 2 MB（Electron 应用通常 100+ MB）——下载更快、占用更小。（Linux 的 AppImage 因内置 WebKit 运行时以跨发行版便携，体积较大）
 
 ## 环境要求
 

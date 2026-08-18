@@ -80,7 +80,9 @@ jobs:
             src-tauri/target/release/bundle/**/*.deb
             src-tauri/target/release/bundle/**/*.rpm
             src-tauri/target/release/bundle/**/*.AppImage
-            src-tauri/target/release/bundle/**/*.tar.gz
+            # No *.tar.gz glob on purpose: it would also match the deb
+            # bundler's control.tar.gz / data.tar.gz intermediates and
+            # upload them as stray release assets.
           if-no-files-found: error
 
   publish:

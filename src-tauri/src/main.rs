@@ -79,6 +79,7 @@ struct ServerState {
 struct ShellState {
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     writer: Mutex<Option<Box<dyn Write + Send>>>,
+    pid: Mutex<Option<u32>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -188,8 +189,11 @@ fn base_cmd(bin: &str) -> Command {
     c
 }
 
+/// Compute the augmented PATH for child processes: prepend Node.js install
+/// directories and the global npm bin directory when they exist, keeping the
+/// inherited PATH as a fallback. Returns None when nothing to prepend.
 #[cfg(windows)]
-fn augment_path_with_node(c: &mut Command) {
+fn augmented_path() -> Option<String> {
     let mut dirs: Vec<String> = Vec::new();
     for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
         if let Ok(base) = std::env::var(var) {
@@ -212,7 +216,7 @@ fn augment_path_with_node(c: &mut Command) {
         }
     }
     if dirs.is_empty() {
-        return;
+        return None;
     }
     let mut path = dirs.join(";");
     if let Ok(p) = std::env::var("PATH") {
@@ -221,7 +225,22 @@ fn augment_path_with_node(c: &mut Command) {
             path.push_str(&p);
         }
     }
-    c.env("PATH", path);
+    Some(path)
+}
+
+#[cfg(windows)]
+fn augment_path_with_node(c: &mut Command) {
+    if let Some(path) = augmented_path() {
+        c.env("PATH", path);
+    }
+}
+
+/// Augment PATH with Node.js directories for CommandBuilder (PTY commands).
+#[cfg(windows)]
+fn augment_path_with_node_builder(c: &mut CommandBuilder) {
+    if let Some(path) = augmented_path() {
+        c.env("PATH", path);
+    }
 }
 
 /// Build a PTY command for the given binary, routing through fnm on
@@ -246,6 +265,7 @@ fn pty_base_cmd(bin: &str) -> CommandBuilder {
     {
         let mut c = CommandBuilder::new("cmd");
         c.args(&["/C", bin]);
+        augment_path_with_node_builder(&mut c);
         c
     }
     #[cfg(not(windows))]
@@ -403,6 +423,7 @@ fn spawn_shell(app: AppHandle) -> Result<(), String> {
         let state = app.state::<ShellState>();
         *state.master.lock().unwrap() = Some(pair.master);
         *state.writer.lock().unwrap() = Some(writer);
+        *state.pid.lock().unwrap() = child.process_id();
     }
 
     stream_pty_output(app.clone(), reader, "term:data");
@@ -413,6 +434,7 @@ fn spawn_shell(app: AppHandle) -> Result<(), String> {
         let state = app.state::<ShellState>();
         *state.master.lock().unwrap() = None;
         *state.writer.lock().unwrap() = None;
+        *state.pid.lock().unwrap() = None;
     });
 
     Ok(())
@@ -537,12 +559,24 @@ fn run_capture(mut cmd: Command) -> Option<String> {
 }
 
 /// Report the global dsh CLI version, or None when it is not installed.
+/// On Windows, retries a few times to handle newly-installed .cmd shims that
+/// may not be immediately visible due to filesystem/PATH caching.
 fn try_dsh_version() -> Option<String> {
-    let mut cmd = base_cmd("dsh");
-    cmd.arg("--version");
-    cmd.env("npm_config_update_notifier", "false");
-    let out = run_capture(cmd)?;
-    extract_version(&[out])
+    let max_attempts = if cfg!(windows) { 5 } else { 1 };
+    for attempt in 1..=max_attempts {
+        let mut cmd = base_cmd("dsh");
+        cmd.arg("--version");
+        cmd.env("npm_config_update_notifier", "false");
+        if let Some(out) = run_capture(cmd) {
+            if let Some(v) = extract_version(&[out]) {
+                return Some(v);
+            }
+        }
+        if attempt < max_attempts {
+            std::thread::sleep(Duration::from_millis(300));
+        }
+    }
+    None
 }
 
 fn is_port_open(port: u16) -> bool {
@@ -665,7 +699,8 @@ fn restart_server(app: AppHandle) -> Result<Status, String> {
 async fn upgrade_dsh(app: AppHandle) -> Result<UpgradeResult, String> {
     // Update the global dsh installation, then read the resulting version.
     let ok = run_pty(&app, upgrade_pty_command(), "term:data")?;
-    std::thread::sleep(Duration::from_millis(150));
+    // Wait for the npm process and filesystem to settle before checking version.
+    std::thread::sleep(Duration::from_millis(500));
     let version = try_dsh_version().unwrap_or_else(|| "unknown".to_string());
 
     if !ok {
@@ -791,6 +826,8 @@ async fn ensure_dsh(app: AppHandle) -> Result<DshInstallResult, String> {
         ));
     }
 
+    // Wait for the npm process and filesystem to settle before checking version.
+    std::thread::sleep(Duration::from_millis(500));
     let version = try_dsh_version().unwrap_or_else(|| "unknown".to_string());
     Ok(DshInstallResult {
         installed: true,
@@ -888,6 +925,7 @@ fn main() {
         .manage(ShellState {
             master: Mutex::new(None),
             writer: Mutex::new(None),
+            pid: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             spawn_shell,
@@ -940,6 +978,7 @@ fn main() {
                 }
             }
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                // Clean up the server process
                 let state = app_handle.state::<ServerState>();
                 let pid = {
                     let mut guard = state.pid.lock().unwrap();
@@ -948,6 +987,21 @@ fn main() {
                 if let Some(pid) = pid {
                     kill_process_group(pid);
                 }
+
+                // Clean up the shell PTY and kill the shell process to avoid
+                // ConPTY resource leaks / leftover cmd.exe on Windows.
+                let shell_state = app_handle.state::<ShellState>();
+                let shell_pid = {
+                    let mut guard = shell_state.pid.lock().unwrap();
+                    guard.take()
+                };
+                if let Some(pid) = shell_pid {
+                    kill_process_group(pid);
+                }
+                let mut master_guard = shell_state.master.lock().unwrap();
+                let mut writer_guard = shell_state.writer.lock().unwrap();
+                *master_guard = None;
+                *writer_guard = None;
             }
             _ => {}
         });

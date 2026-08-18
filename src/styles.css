@@ -171,6 +171,15 @@ main {
 }
 .cli-term .xterm { height: 100%; padding: 6px 8px; }
 
+/* WKWebView draws the terminal viewport's native scrollbar in light system
+   appearance as a white strip on the right edge; style it dark so it always
+   matches the terminal, without forcing the whole window into dark mode. */
+.cli-term .xterm .xterm-viewport { background-color: #0d1117; }
+.cli-term .xterm .xterm-viewport::-webkit-scrollbar { width: 8px; }
+.cli-term .xterm .xterm-viewport::-webkit-scrollbar-track { background: #0d1117; }
+.cli-term .xterm .xterm-viewport::-webkit-scrollbar-thumb { background: #2a3140; border-radius: 4px; }
+.cli-term .xterm .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #3d4657; }
+
 /* version chip */
 .version {
   margin-left: 8px;

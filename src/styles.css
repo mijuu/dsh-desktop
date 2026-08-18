@@ -180,7 +180,7 @@ main {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 9px;
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Microsoft YaHei", monospace;
 }
 
 /* topbar close button */
@@ -230,7 +230,7 @@ main {
   padding: 7px 12px;
   border-radius: 7px;
   font-size: 13px;
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Microsoft YaHei", monospace;
 }
 .plugins-toolbar input:focus { outline: none; border-color: var(--accent); }
 .plugins-toolbar button {
@@ -265,7 +265,7 @@ main {
 }
 .plugin-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .plugin-name {
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Microsoft YaHei", monospace;
   font-size: 13px;
   color: var(--fg);
   overflow: hidden;
@@ -275,7 +275,7 @@ main {
 .plugin-version {
   font-size: 12px;
   color: var(--muted);
-  font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-family: "SF Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Microsoft YaHei", monospace;
 }
 .plugin-badge {
   font-size: 10.5px;

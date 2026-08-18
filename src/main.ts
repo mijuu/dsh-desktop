@@ -325,6 +325,7 @@ async function boot(): Promise<void> {
       showApp();
       setStatus("running", t("status.running") + s.url);
       appendLog("> " + t("log.reused", { url: s.url }), "sys");
+      spawnShellOnce();
       return;
     }
   } catch {
@@ -416,6 +417,7 @@ async function setupEvents(): Promise<void> {
     setStatus("running", t("status.running") + APP_URL);
     showApp();
     appendLog("> " + t("log.ready") + APP_URL, "sys");
+    spawnShellOnce();
     refreshDshVersion();
     if (!cliMode) scheduleHide();
   });
@@ -424,6 +426,7 @@ async function setupEvents(): Promise<void> {
       window.clearTimeout(startupErrorTimer);
       startupErrorTimer = undefined;
     }
+    spawnShellOnce();
     showStartupError(t("err.startupTimeout"));
   });
   await listen<number | null>("server:exited", (e) => {
@@ -439,6 +442,7 @@ async function setupEvents(): Promise<void> {
       if (startupErrorTimer !== undefined) window.clearTimeout(startupErrorTimer);
       startupErrorTimer = window.setTimeout(() => {
         startupErrorTimer = undefined;
+        spawnShellOnce();
         showStartupError(t("err.exitedEarly", { code: e.payload ?? 0 }));
       }, 3000);
     }
@@ -558,6 +562,7 @@ async function addPlugin(): Promise<void> {
   input.value = "";
   switchTab("cli");
   const cmd = `dsh plugin --profile web add '${name}'\r\n`;
+  await spawnShellOnce();
   try {
     await invoke("term_input", {
       data: Array.from(new TextEncoder().encode(cmd)),
@@ -588,6 +593,7 @@ async function handleRemove(name: string, btn: HTMLButtonElement): Promise<void>
   btn.disabled = true;
   switchTab("cli");
   const cmd = `dsh plugin --profile web remove '${name}'\r\n`;
+  await spawnShellOnce();
   try {
     await invoke("term_input", {
       data: Array.from(new TextEncoder().encode(cmd)),
@@ -616,11 +622,31 @@ async function refreshDshVersion(): Promise<void> {
 // ===== CLI 终端（交互式 shell） =====
 let cliTerm: Terminal | null = null;
 let cliTermFit: FitAddon | null = null;
+let shellSpawned = false;
+
+/** Start the interactive CLI shell exactly once. Deferred until the service
+ *  is ready (or the app reuses an already-running service) so the shell's
+ *  first prompt is drawn on a clean line — otherwise a partial line from
+ *  `dsh web` output (no trailing newline) makes zsh print `%` + padding
+ *  via PROMPT_SP. Kept app-side so users never need to touch their shell. */
+async function spawnShellOnce(): Promise<void> {
+  if (shellSpawned) return;
+  shellSpawned = true;
+  try {
+    await invoke("spawn_shell");
+  } catch (e) {
+    appendLog("> " + String(e), "err");
+  }
+}
 
 function initTerminals(): void {
   const el = q<HTMLDivElement>("#cli-term");
   cliTerm = new Terminal({
     fontSize: 12,
+    // SF Mono/Menlo/monospace have no CJK glyphs; WKWebView's canvas renders
+    // missing glyphs as "?" — append CJK fallbacks so Chinese works.
+    fontFamily:
+      '"SF Mono", ui-monospace, Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "Microsoft YaHei", monospace',
     cursorBlink: true,
     theme: { background: "#0d1117", foreground: "#e6edf3" },
   });
@@ -652,7 +678,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   setupBar();
   initTerminals();
   window.addEventListener("resize", fitTerminals);
-  invoke("spawn_shell").catch((e) => appendLog("> " + String(e), "err"));
   // The bar is visible at startup so users discover the controls,
   // then auto-hides after 5s (or on mouseleave / × button).
   showBar();

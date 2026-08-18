@@ -240,18 +240,30 @@ fn augment_path_with_node(c: &mut Command) {
 /// `run_npm`). Routes through fnm so it also works when launched from the GUI.
 #[cfg(not(windows))]
 fn pty_base_cmd(bin: &str) -> CommandBuilder {
-    for fnm in [
-        "/opt/homebrew/bin/fnm",
-        "/opt/homebrew/opt/fnm/bin/fnm",
-        "/usr/local/bin/fnm",
-    ] {
-        if Path::new(fnm).is_file() {
-            let mut c = CommandBuilder::new(fnm);
-            c.args(&["exec", "--using", "default", "--", bin]);
-            return c;
+    #[cfg(not(windows))]
+    {
+        for fnm in [
+            "/opt/homebrew/bin/fnm",
+            "/opt/homebrew/opt/fnm/bin/fnm",
+            "/usr/local/bin/fnm",
+        ] {
+            if Path::new(fnm).is_file() {
+                let mut c = CommandBuilder::new(fnm);
+                c.args(&["exec", "--using", "default", "--", bin]);
+                c.env("TERM", "xterm-256color");
+                c.env("LANG", "en_US.UTF-8");
+                return c;
+            }
         }
     }
-    CommandBuilder::new(bin)
+    let mut c = CommandBuilder::new(bin);
+    #[cfg(not(windows))]
+    {
+        // GUI-launched apps don't inherit TERM/LANG from launchd.
+        c.env("TERM", "xterm-256color");
+        c.env("LANG", "en_US.UTF-8");
+    }
+    c
 }
 
 #[cfg(not(windows))]
@@ -424,10 +436,18 @@ fn shell_command() -> CommandBuilder {
             if Path::new(fnm).is_file() {
                 let mut c = CommandBuilder::new(fnm);
                 c.args(&["exec", "--using", "default", "--", &shell]);
+                c.env("TERM", "xterm-256color");
+                c.env("LANG", "en_US.UTF-8");
                 return c;
             }
         }
-        CommandBuilder::new(shell)
+        let mut c = CommandBuilder::new(shell);
+        // GUI-launched apps don't inherit TERM/LANG from launchd: without TERM
+        // zsh's line editor can't map backspace/arrows/IME echo; without a
+        // UTF-8 locale multibyte input degrades. Set both explicitly.
+        c.env("TERM", "xterm-256color");
+        c.env("LANG", "en_US.UTF-8");
+        c
     }
     #[cfg(windows)]
     {

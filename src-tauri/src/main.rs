@@ -235,64 +235,56 @@ fn augment_path_with_node(c: &mut Command) {
     }
 }
 
-/// Augment PATH with Node.js directories for CommandBuilder (PTY commands).
-#[cfg(windows)]
-fn augment_path_with_node_builder(c: &mut CommandBuilder) {
-    if let Some(path) = augmented_path() {
-        c.env("PATH", path);
-    }
-}
-
-/// Build a PTY command for the given binary, routing through fnm on
-/// macOS/Linux so it also works when launched from the GUI.
-/// On Windows, use cmd /C to resolve .cmd shim files (npm.cmd, dsh.cmd).
+/// Build a PTY command for the given binary (macOS/Linux only; Windows uses
+/// plain processes for non-interactive launches — see `spawn_dsh_web` and
+/// `run_npm`). Routes through fnm so it also works when launched from the GUI.
+#[cfg(not(windows))]
 fn pty_base_cmd(bin: &str) -> CommandBuilder {
-    #[cfg(not(windows))]
-    {
-        for fnm in [
-            "/opt/homebrew/bin/fnm",
-            "/opt/homebrew/opt/fnm/bin/fnm",
-            "/usr/local/bin/fnm",
-        ] {
-            if Path::new(fnm).is_file() {
-                let mut c = CommandBuilder::new(fnm);
-                c.args(&["exec", "--using", "default", "--", bin]);
-                return c;
-            }
+    for fnm in [
+        "/opt/homebrew/bin/fnm",
+        "/opt/homebrew/opt/fnm/bin/fnm",
+        "/usr/local/bin/fnm",
+    ] {
+        if Path::new(fnm).is_file() {
+            let mut c = CommandBuilder::new(fnm);
+            c.args(&["exec", "--using", "default", "--", bin]);
+            return c;
         }
     }
-    #[cfg(windows)]
-    {
-        let mut c = CommandBuilder::new("cmd");
-        c.args(&["/C", bin]);
-        augment_path_with_node_builder(&mut c);
-        c
-    }
-    #[cfg(not(windows))]
     CommandBuilder::new(bin)
 }
 
+#[cfg(not(windows))]
 fn dsh_pty_command() -> CommandBuilder {
     let mut c = pty_base_cmd("dsh");
     c.args(&["web"]);
     c
 }
 
-fn upgrade_pty_command() -> CommandBuilder {
-    let mut c = pty_base_cmd("npm");
-    c.args(&["update", "-g", "@deepseek-ai/dsh"]);
-    c.env("npm_config_update_notifier", "false");
-    c
+/// Run `npm <action> -g @deepseek-ai/dsh`, streaming raw output to the given
+/// frontend event, and report whether it exited successfully.
+///
+/// Platform split: on Windows, running npm through a ConPTY (`cmd /C npm ...`)
+/// fails with 0xc0000142 on Windows 11 24H2+, so a plain process with piped
+/// stdout/stderr is used instead (same as v0.2.6). macOS/Linux keep the PTY.
+#[cfg(not(windows))]
+fn run_npm(app: &AppHandle, action: &str, event: &'static str) -> Result<bool, String> {
+    let mut cmd = pty_base_cmd("npm");
+    cmd.args(&[action, "-g", "@deepseek-ai/dsh"]);
+    cmd.env("npm_config_update_notifier", "false");
+    run_pty(app, cmd, event)
 }
 
-fn install_dsh_pty_command() -> CommandBuilder {
-    let mut c = pty_base_cmd("npm");
-    c.args(&["install", "-g", "@deepseek-ai/dsh"]);
-    c.env("npm_config_update_notifier", "false");
-    c
+#[cfg(windows)]
+fn run_npm(app: &AppHandle, action: &str, event: &'static str) -> Result<bool, String> {
+    let mut cmd = base_cmd("npm");
+    cmd.args(&[action, "-g", "@deepseek-ai/dsh"]);
+    cmd.env("npm_config_update_notifier", "false");
+    run_plain(app, cmd, event)
 }
 
 /// Spawn a command in a PTY and return its output reader and child handle.
+#[cfg(not(windows))]
 fn spawn_pty(
     cmd: CommandBuilder,
 ) -> Result<(Box<dyn Read + Send>, Box<dyn PtyChild + Send + Sync>), String> {
@@ -318,6 +310,7 @@ fn spawn_pty(
 
 /// Run a PTY command to completion, streaming its raw bytes to the given
 /// frontend event, and report whether it exited successfully.
+#[cfg(not(windows))]
 fn run_pty(app: &AppHandle, cmd: CommandBuilder, event: &'static str) -> Result<bool, String> {
     let (mut reader, mut child) = spawn_pty(cmd)?;
     let mut buf = [0u8; 4096];
@@ -330,6 +323,57 @@ fn run_pty(app: &AppHandle, cmd: CommandBuilder, event: &'static str) -> Result<
             Err(_) => break,
         }
     }
+    let status = child
+        .wait()
+        .map_err(|e| format!("{}: {e}", tr("Failed to wait for command", "等待命令结束失败")))?;
+    Ok(status.success())
+}
+
+/// Run a plain (non-PTY) command to completion on Windows, streaming its raw
+/// stdout/stderr bytes to the given frontend event, and report whether it
+/// exited successfully. Used instead of ConPTY for `cmd /C ...` launches,
+/// which fail with 0xc0000142 on Windows 11 24H2+.
+#[cfg(windows)]
+fn run_plain(app: &AppHandle, mut cmd: Command, event: &'static str) -> Result<bool, String> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{}: {e}", tr("Failed to launch command", "启动命令失败")))?;
+
+    // Stream stdout/stderr to the frontend (merged, like the PTY path).
+    if let Some(out) = child.stdout.take() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut reader = out;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = app.emit(event, &buf[..n].to_vec());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut reader = err;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = app.emit(event, &buf[..n].to_vec());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
     let status = child
         .wait()
         .map_err(|e| format!("{}: {e}", tr("Failed to wait for command", "等待命令结束失败")))?;
@@ -598,6 +642,77 @@ fn kill_process_group(pid: u32) {
     let _ = c.status();
 }
 
+/// Spawn the dsh web server, returning its pid and a closure that waits for
+/// exit. Output is streamed to the `term:data` event.
+///
+/// Platform split: on Windows, spawning `cmd /C dsh web` through a ConPTY
+/// fails with "application failed to start (0xc0000142)" on Windows 11 24H2+
+/// (the newly-created cmd.exe fails DLL initialization). The interactive CLI
+/// shell (no `/C`) works fine, so only these non-interactive launches fall
+/// back to a plain process with piped stdout/stderr, exactly like v0.2.6.
+#[cfg(not(windows))]
+fn spawn_dsh_web(
+    app: &AppHandle,
+) -> Result<(u32, Box<dyn FnOnce() -> i32 + Send>), String> {
+    let (reader, mut child) = spawn_pty(dsh_pty_command())
+        .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
+    let pid = child.process_id().unwrap_or(0);
+    stream_pty_output(app.clone(), reader, "term:data");
+    let waiter = Box::new(move || child.wait().ok().map(|s| s.exit_code() as i32).unwrap_or(-1));
+    Ok((pid, waiter))
+}
+
+#[cfg(windows)]
+fn spawn_dsh_web(
+    app: &AppHandle,
+) -> Result<(u32, Box<dyn FnOnce() -> i32 + Send>), String> {
+    let mut cmd = base_cmd("dsh");
+    cmd.arg("web");
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
+    let pid = child.id();
+
+    // Stream stdout/stderr to the CLI terminal (merged, like the PTY path).
+    if let Some(out) = child.stdout.take() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut reader = out;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = app.emit("term:data", &buf[..n].to_vec());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(err) = child.stderr.take() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut reader = err;
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = app.emit("term:data", &buf[..n].to_vec());
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    let waiter = Box::new(move || child.wait().ok().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1));
+    Ok((pid, waiter))
+}
+
 fn start_internal(app: &AppHandle) -> Result<Status, String> {
     {
         let state = app.state::<ServerState>();
@@ -613,12 +728,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
         return Ok(status_of(true));
     }
 
-    let (reader, mut child) = spawn_pty(dsh_pty_command())
-        .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
-    let pid = child.process_id().unwrap_or(0);
-
-    // Stream the PTY output (merged stdout/stderr) to the CLI terminal.
-    stream_pty_output(app.clone(), reader, "term:data");
+    let (pid, waiter) = spawn_dsh_web(app)?;
 
     {
         let state = app.state::<ServerState>();
@@ -630,7 +740,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
     {
         let app = app.clone();
         std::thread::spawn(move || {
-            let code = child.wait().ok().map(|s| s.exit_code() as i32);
+            let code = waiter();
             let state = app.state::<ServerState>();
             let mut guard = state.pid.lock().unwrap();
             *guard = None;
@@ -698,7 +808,7 @@ fn restart_server(app: AppHandle) -> Result<Status, String> {
 #[tauri::command]
 async fn upgrade_dsh(app: AppHandle) -> Result<UpgradeResult, String> {
     // Update the global dsh installation, then read the resulting version.
-    let ok = run_pty(&app, upgrade_pty_command(), "term:data")?;
+    let ok = run_npm(&app, "update", "term:data")?;
     // Wait for the npm process and filesystem to settle before checking version.
     std::thread::sleep(Duration::from_millis(500));
     let version = try_dsh_version().unwrap_or_else(|| "unknown".to_string());
@@ -818,7 +928,7 @@ async fn ensure_dsh(app: AppHandle) -> Result<DshInstallResult, String> {
             "正在安装 @deepseek-ai/dsh（首次安装可能需要几分钟）…",
         ),
     );
-    let ok = run_pty(&app, install_dsh_pty_command(), "term:data")?;
+    let ok = run_npm(&app, "install", "term:data")?;
     if !ok {
         return Err(tr(
             "Failed to install dsh: npm install command did not succeed. Check the CLI logs.",

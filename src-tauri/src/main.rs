@@ -226,6 +226,7 @@ fn augment_path_with_node(c: &mut Command) {
 
 /// Build a PTY command for the given binary, routing through fnm on
 /// macOS/Linux so it also works when launched from the GUI.
+/// On Windows, use cmd /C to resolve .cmd shim files (npm.cmd, dsh.cmd).
 fn pty_base_cmd(bin: &str) -> CommandBuilder {
     #[cfg(not(windows))]
     {
@@ -241,6 +242,13 @@ fn pty_base_cmd(bin: &str) -> CommandBuilder {
             }
         }
     }
+    #[cfg(windows)]
+    {
+        let mut c = CommandBuilder::new("cmd");
+        c.args(&["/C", bin]);
+        c
+    }
+    #[cfg(not(windows))]
     CommandBuilder::new(bin)
 }
 

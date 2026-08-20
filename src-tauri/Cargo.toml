@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desktop"
-version = "0.3.2"
+version = "0.3.4"
 description = "DeepSeek Harness desktop wrapper"
 authors = ["mijuu"]
 edition = "2021"

@@ -253,7 +253,7 @@ async function start(): Promise<void> {
   }
   setStatus("starting", t("status.starting"));
   setLoading(t("loading.starting"));
-  appendLog("$ dsh web", "sys");
+  appendLog("$ dsh web --no-open", "sys");
   try {
     const s = await invoke<any>("start_server");
     appendLog("> " + t("log.waitingPort", { port: s.port }), "sys");

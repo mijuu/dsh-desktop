@@ -269,7 +269,7 @@ fn pty_base_cmd(bin: &str) -> CommandBuilder {
 #[cfg(not(windows))]
 fn dsh_pty_command() -> CommandBuilder {
     let mut c = pty_base_cmd("dsh");
-    c.args(&["web"]);
+    c.args(&["web", "--no-open"]);
     c
 }
 

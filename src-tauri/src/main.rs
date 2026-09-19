@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
+#[cfg(not(windows))]
+use portable_pty::Child as PtyChild;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
@@ -1090,7 +1092,8 @@ fn stop_server(app: AppHandle) -> Status {
 /// to it.
 #[tauri::command]
 fn register_shell_url(app: AppHandle, url: String) {
-    let mut guard = app.state::<UiState>().shell_url.lock().unwrap();
+    let state = app.state::<UiState>();
+    let mut guard = state.shell_url.lock().unwrap();
     if guard.is_none() {
         *guard = Some(url);
     }
@@ -1490,6 +1493,7 @@ fn main() {
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
+                    let _ = api;
                     window.app_handle().exit(0);
                 }
             }

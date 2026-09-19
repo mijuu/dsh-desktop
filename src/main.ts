@@ -65,6 +65,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     "err.installDshFailed": "Failed to install dsh: ",
     "err.startupTimeout": "Startup timed out: no port listening within 90s. Check the CLI logs.",
     "err.exitedEarly": "Startup failed: process exited early (code {code}). Check the CLI logs.",
+    "err.authRequired": "A newer dsh web is already running on port 3080, but its access token is printed only once in the terminal that started it, so this app cannot authenticate. Stop that dsh web process first, then start it from this app.",
     "version.unknown": "dsh unknown",
   },
   zh: {
@@ -117,6 +118,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     "err.installDshFailed": "\u5b89\u88c5 dsh \u5931\u8d25\uff1a",
     "err.startupTimeout": "\u542f\u52a8\u8d85\u65f6\uff1a90 \u79d2\u5185\u672a\u68c0\u6d4b\u5230\u7aef\u53e3\u76d1\u542c\uff0c\u8bf7\u68c0\u67e5 CLI \u65e5\u5fd7",
     "err.exitedEarly": "\u542f\u52a8\u5931\u8d25\uff1a\u8fdb\u7a0b\u63d0\u524d\u9000\u51fa\uff08\u9000\u51fa\u7801 {code}\uff09\uff0c\u8bf7\u68c0\u67e5 CLI \u65e5\u5fd7",
+    "err.authRequired": "\u68c0\u6d4b\u5230\u65b0\u7248 dsh web \u5df2\u5728 3080 \u7aef\u53e3\u8fd0\u884c\uff0c\u4f46\u5b83\u7684\u8bbf\u95ee token \u53ea\u5728\u542f\u52a8\u5b83\u7684\u7ec8\u7aef\u6253\u5370\u4e00\u6b21\uff0c\u672c\u5e94\u7528\u65e0\u6cd5\u83b7\u53d6\u9274\u6743\u4fe1\u606f\u3002\u8bf7\u5148\u5173\u95ed\u90a3\u4e2a dsh web \u8fdb\u7a0b\uff0c\u518d\u91cd\u65b0\u4ece\u672c\u5e94\u7528\u542f\u52a8\u3002",
     "version.unknown": "dsh \u672a\u77e5",
   },
 };
@@ -172,6 +174,11 @@ let ready = false;
 let hideTimer: number | undefined;
 let startupErrorTimer: number | undefined;
 
+/** URL the iframe should load — the authenticated one once known. */
+let currentUrl = APP_URL;
+/** Last URL actually assigned to the iframe, to avoid needless reloads. */
+let loadedUrl = "";
+
 function setStatus(state: State, text: string): void {
   dot.className = "dot " + state;
   statusText.textContent = text;
@@ -206,7 +213,10 @@ function showStartupError(message: string, opts: { nodejs?: boolean } = {}): voi
 
 function showApp(): void {
   loading.style.display = "none";
-  if (iframe.src !== APP_URL) iframe.src = APP_URL;
+  if (loadedUrl !== currentUrl) {
+    loadedUrl = currentUrl;
+    iframe.src = currentUrl;
+  }
 }
 
 function showBar(): void {
@@ -322,8 +332,13 @@ async function boot(): Promise<void> {
   try {
     const s = await invoke<any>("server_status");
     if (s.running) {
+      if (s.needs_auth) {
+        showStartupError(t("err.authRequired"));
+        return;
+      }
+      currentUrl = s.url || APP_URL;
       showApp();
-      setStatus("running", t("status.running") + s.url);
+      setStatus("running", t("status.running") + APP_URL);
       appendLog("> " + t("log.reused", { url: s.url }), "sys");
       spawnShellOnce();
       return;
@@ -347,8 +362,13 @@ async function upgrade(): Promise<void> {
     if (r.ok) {
       appendLog("> " + t("log.installedVersion", { version: r.version, message: r.message }), "sys");
       if (r.restarted) {
+        // The old process is gone; `server:ready` will arrive with the new
+        // (possibly token-authenticated) URL and call showApp() again.
+        currentUrl = APP_URL;
+        loadedUrl = "";
         iframe.src = "about:blank";
-        showApp();
+        setStatus("starting", t("status.starting"));
+        setLoading(t("loading.starting"));
       }
     } else {
       appendLog("> " + t("log.upgradeFailed") + r.message, "err");
@@ -408,18 +428,27 @@ async function setupEvents(): Promise<void> {
   await listen<number[]>("term:data", (e) => {
     cliTerm?.write(new Uint8Array(e.payload));
   });
-  await listen("server:ready", () => {
+  await listen<string | null>("server:ready", (e) => {
     if (startupErrorTimer !== undefined) {
       window.clearTimeout(startupErrorTimer);
       startupErrorTimer = undefined;
     }
     ready = true;
+    currentUrl = e.payload || APP_URL;
     setStatus("running", t("status.running") + APP_URL);
     showApp();
     appendLog("> " + t("log.ready") + APP_URL, "sys");
     spawnShellOnce();
     refreshDshVersion();
     if (!cliMode) scheduleHide();
+  });
+  await listen("server:auth-error", () => {
+    if (startupErrorTimer !== undefined) {
+      window.clearTimeout(startupErrorTimer);
+      startupErrorTimer = undefined;
+    }
+    showStartupError(t("err.authRequired"));
+    spawnShellOnce();
   });
   await listen("server:timeout", () => {
     if (startupErrorTimer !== undefined) {

@@ -73,6 +73,9 @@ fn url() -> String {
 
 struct ServerState {
     pid: Mutex<Option<u32>>,
+    /// Authenticated URL (with `?token=`) parsed from the launched
+    /// `dsh web` output. New dsh versions reject plain `/` with 401.
+    auth_url: Mutex<Option<String>>,
 }
 
 /// State for the interactive shell running in the CLI terminal.
@@ -87,10 +90,145 @@ struct Status {
     running: bool,
     port: u16,
     url: String,
+    /// True when a foreign `dsh web` holds the port but its launch token is
+    /// unknowable to us (token-auth version), so the app cannot embed it.
+    needs_auth: bool,
 }
 
-fn status_of(running: bool) -> Status {
-    Status { running, port: PORT, url: url() }
+fn status_of(app: &AppHandle, running: bool) -> Status {
+    let state = app.state::<ServerState>();
+    let auth = state.auth_url.lock().unwrap().clone();
+    let owned = state.pid.lock().unwrap().is_some();
+    let needs_auth = auth.is_none() && !owned && is_port_open(PORT) && probe_needs_auth();
+    Status { running, port: PORT, url: auth.unwrap_or_else(url), needs_auth }
+}
+
+fn ready_url(app: &AppHandle) -> String {
+    app.state::<ServerState>()
+        .auth_url
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_else(url)
+}
+
+/// Ask the running server whether it requires token authentication: the new
+/// `dsh web` answers 401 to a plain `GET /`, older versions serve the app.
+fn probe_needs_auth() -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", PORT)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1500)));
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 32];
+    match stream.read(&mut buf) {
+        Ok(n) => {
+            let head = String::from_utf8_lossy(&buf[..n]);
+            head.starts_with("HTTP/1.1 401") || head.starts_with("HTTP/1.0 401")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Strip ANSI/VT escape sequences and CR so PTY output can be pattern-matched
+/// as plain text.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\r' {
+            continue;
+        }
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if matches!(c, '@'..='~') {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    out
+}
+
+const WEB_URL_MARK: &str = "dsh web: http";
+
+/// Incrementally extracts the first `dsh web: <url>` line from streamed
+/// process output, tolerating chunk boundaries and ANSI noise. Done once the
+/// line is complete.
+#[derive(Default)]
+struct LaunchUrlScanner {
+    tail: String,
+    done: bool,
+}
+
+impl LaunchUrlScanner {
+    fn feed(&mut self, text: &str) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        let mut s = std::mem::take(&mut self.tail);
+        s.push_str(text);
+        let clean = strip_ansi(&s);
+        if let Some(idx) = clean.find(WEB_URL_MARK) {
+            let after: String = clean[idx + "dsh web: ".len()..].chars().collect();
+            let url: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '(')
+                .collect();
+            if url.len() < after.len() {
+                // A terminator (space before "(LAN: …)" or the line break)
+                // followed the URL, so it is complete.
+                self.done = true;
+                if after.contains("token=") {
+                    return Some(url);
+                }
+                return None;
+            }
+            // URL may still be growing across chunks; keep the whole line
+            // (marker included) so the next feed resumes parsing it.
+            self.tail = clean[idx..].to_string();
+            if self.tail.len() > 8192 {
+                self.done = true;
+            }
+            return None;
+        }
+        let keep: String = clean.chars().rev().take(32).collect::<Vec<_>>().into_iter().rev().collect();
+        self.tail = keep;
+        None
+    }
+
+    fn capture(&mut self, app: &AppHandle, bytes: &[u8]) {
+        if self.done {
+            return;
+        }
+        if let Some(u) = self.feed(&String::from_utf8_lossy(bytes)) {
+            *app.state::<ServerState>().auth_url.lock().unwrap() = Some(u);
+        }
+    }
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -393,13 +531,24 @@ fn run_plain(app: &AppHandle, mut cmd: Command, event: &'static str) -> Result<b
 }
 
 /// Stream a PTY reader's output to the frontend on a background thread.
-fn stream_pty_output(app: AppHandle, mut reader: Box<dyn Read + Send>, event: &'static str) {
+/// When `watch_web_url` is set, also scan the output for the `dsh web:`
+/// authenticated URL line.
+fn stream_pty_output(
+    app: AppHandle,
+    mut reader: Box<dyn Read + Send>,
+    event: &'static str,
+    watch_web_url: bool,
+) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut scanner = LaunchUrlScanner::default();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    if watch_web_url {
+                        scanner.capture(&app, &buf[..n]);
+                    }
                     let _ = app.emit(event, &buf[..n].to_vec());
                 }
                 Err(_) => break,
@@ -490,7 +639,7 @@ fn spawn_shell(app: AppHandle) -> Result<(), String> {
         *state.pid.lock().unwrap() = child.process_id();
     }
 
-    stream_pty_output(app.clone(), reader, "term:data");
+    stream_pty_output(app.clone(), reader, "term:data", false);
 
     // Clean up state if the shell itself exits.
     std::thread::spawn(move || {
@@ -677,7 +826,7 @@ fn spawn_dsh_web(
     let (reader, mut child) = spawn_pty(dsh_pty_command())
         .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
     let pid = child.process_id().unwrap_or(0);
-    stream_pty_output(app.clone(), reader, "term:data");
+    stream_pty_output(app.clone(), reader, "term:data", true);
     let waiter = Box::new(move || child.wait().ok().map(|s| s.exit_code() as i32).unwrap_or(-1));
     Ok((pid, waiter))
 }
@@ -687,7 +836,7 @@ fn spawn_dsh_web(
     app: &AppHandle,
 ) -> Result<(u32, Box<dyn FnOnce() -> i32 + Send>), String> {
     let mut cmd = base_cmd("dsh");
-    cmd.arg("web");
+    cmd.args(["web", "--no-open"]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = cmd
@@ -695,16 +844,19 @@ fn spawn_dsh_web(
         .map_err(|e| format!("{}: {e}", tr("Failed to launch dsh web", "无法启动 dsh web")))?;
     let pid = child.id();
 
-    // Stream stdout/stderr to the CLI terminal (merged, like the PTY path).
+    // Stream stdout/stderr to the CLI terminal (merged, like the PTY path),
+    // scanning for the `dsh web:` authenticated-URL line.
     if let Some(out) = child.stdout.take() {
         let app = app.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut reader = out;
+            let mut scanner = LaunchUrlScanner::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        scanner.capture(&app, &buf[..n]);
                         let _ = app.emit("term:data", &buf[..n].to_vec());
                     }
                     Err(_) => break,
@@ -717,10 +869,12 @@ fn spawn_dsh_web(
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut reader = err;
+            let mut scanner = LaunchUrlScanner::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        scanner.capture(&app, &buf[..n]);
                         let _ = app.emit("term:data", &buf[..n].to_vec());
                     }
                     Err(_) => break,
@@ -737,15 +891,20 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
     {
         let state = app.state::<ServerState>();
         if state.pid.lock().unwrap().is_some() {
-            return Ok(status_of(true));
+            return Ok(status_of(app, true));
         }
     }
 
     // Port already serving (e.g. the user's browser dsh session)? Reuse it
     // instead of spawning a duplicate that would fail with EADDRINUSE.
     if is_port_open(PORT) {
-        let _ = app.emit("server:ready", ());
-        return Ok(status_of(true));
+        let s = status_of(app, true);
+        if s.needs_auth {
+            let _ = app.emit("server:auth-error", ());
+        } else {
+            let _ = app.emit("server:ready", s.url.clone());
+        }
+        return Ok(s);
     }
 
     let (pid, waiter) = spawn_dsh_web(app)?;
@@ -764,6 +923,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
             let state = app.state::<ServerState>();
             let mut guard = state.pid.lock().unwrap();
             *guard = None;
+            *state.auth_url.lock().unwrap() = None;
             drop(guard);
             let _ = app.emit("server:exited", code);
         });
@@ -777,7 +937,29 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
             let deadline = Instant::now() + Duration::from_secs(90);
             loop {
                 if is_port_open(PORT) {
-                    let _ = app.emit("server:ready", ());
+                    // Token-auth dsh versions only reveal the launch token
+                    // in the `dsh web:` line they print at startup; wait a
+                    // short grace period for the scanner to capture it. A
+                    // plain 200 probe means the older, auth-free version is
+                    // serving and no wait is needed.
+                    let token_deadline = Instant::now() + Duration::from_secs(8);
+                    loop {
+                        let has_token = app
+                            .state::<ServerState>()
+                            .auth_url
+                            .lock()
+                            .unwrap()
+                            .is_some();
+                        if has_token || !probe_needs_auth() || Instant::now() >= token_deadline {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    if ready_url(&app) == url() && probe_needs_auth() {
+                        let _ = app.emit("server:auth-error", ());
+                    } else {
+                        let _ = app.emit("server:ready", ready_url(&app));
+                    }
                     return;
                 }
                 if app.state::<ServerState>().pid.lock().unwrap().is_none() {
@@ -792,7 +974,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
         });
     }
 
-    Ok(status_of(true))
+    Ok(status_of(app, true))
 }
 
 #[tauri::command]
@@ -810,11 +992,12 @@ fn stop_server(app: AppHandle) -> Status {
     match pid {
         Some(pid) => {
             kill_process_group(pid);
+            *state.auth_url.lock().unwrap() = None;
             let _ = app.emit("server:stopped", ());
-            status_of(false)
+            status_of(&app, false)
         }
         // Nothing we own: reflect whether 3080 is still up (reused server).
-        None => status_of(is_port_open(PORT)),
+        None => status_of(&app, is_port_open(PORT)),
     }
 }
 
@@ -1046,12 +1229,15 @@ async fn list_plugins() -> Result<Vec<PluginInfo>, String> {
 fn server_status(app: AppHandle) -> Status {
     let state = app.state::<ServerState>();
     let running = state.pid.lock().unwrap().is_some() || is_port_open(PORT);
-    status_of(running)
+    status_of(&app, running)
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(ServerState { pid: Mutex::new(None) })
+        .manage(ServerState {
+            pid: Mutex::new(None),
+            auth_url: Mutex::new(None),
+        })
         .manage(ShellState {
             master: Mutex::new(None),
             writer: Mutex::new(None),

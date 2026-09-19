@@ -16,6 +16,7 @@ const LANG: Lang = detectLang();
 
 const I18N: Record<Lang, Record<string, string>> = {
   en: {
+    "tab.app": "App",
     "tab.plugins": "Plugins",
     "status.starting": "Starting\u2026",
     "status.running": "Running \u00b7 ",
@@ -25,6 +26,11 @@ const I18N: Record<Lang, Record<string, string>> = {
     "status.preparing": "Preparing dsh environment\u2026",
     "bar.close": "Hide toolbar",
     "bar.show": "Show toolbar",
+    "bar.app": "App",
+    "bar.running": "Running",
+    "bar.stopped": "Stopped",
+    "bar.starting": "Starting\u2026",
+    "bar.error": "Error",
     "loading.starting": "Starting dsh web\u2026",
     "loading.checkingDsh": "Checking dsh environment\u2026",
     "loading.stopped": "Service stopped",
@@ -69,6 +75,7 @@ const I18N: Record<Lang, Record<string, string>> = {
     "version.unknown": "dsh unknown",
   },
   zh: {
+    "tab.app": "\u5e94\u7528",
     "tab.plugins": "\u63d2\u4ef6",
     "status.starting": "\u542f\u52a8\u4e2d\u2026",
     "status.running": "\u8fd0\u884c\u4e2d \u00b7 ",
@@ -78,6 +85,11 @@ const I18N: Record<Lang, Record<string, string>> = {
     "status.preparing": "\u51c6\u5907 dsh \u73af\u5883\u2026",
     "bar.close": "\u9690\u85cf\u5de5\u5177\u680f",
     "bar.show": "\u663e\u793a\u5de5\u5177\u680f",
+    "bar.app": "\u5e94\u7528",
+    "bar.running": "\u8fd0\u884c\u4e2d",
+    "bar.stopped": "\u5df2\u505c\u6b62",
+    "bar.starting": "\u542f\u52a8\u4e2d\u2026",
+    "bar.error": "\u5f02\u5e38",
     "loading.starting": "\u6b63\u5728\u542f\u52a8 dsh web \u2026",
     "loading.checkingDsh": "\u6b63\u5728\u68c0\u67e5 dsh \u73af\u5883\u2026",
     "loading.stopped": "\u670d\u52a1\u5df2\u505c\u6b62",
@@ -153,31 +165,34 @@ function applyTranslations(): void {
 const PORT = 3080;
 const APP_URL = "http://127.0.0.1:" + PORT;
 
+const PARAMS = new URLSearchParams(location.search);
+/** The same document also serves the floating toolbar window. */
+const BAR_VIEW = PARAMS.get("view") === "bar";
+
 function q<T extends HTMLElement>(sel: string): T {
   return document.querySelector(sel) as T;
 }
 
-const iframe = q<HTMLIFrameElement>("#app-iframe");
+/** Base URL of this page without query — the shell window's URL. */
+function shellUrlBase(): string {
+  return location.href.split("?")[0];
+}
+
 const loading = q<HTMLDivElement>("#loading");
 const dot = q<HTMLSpanElement>("#status-dot");
 const statusText = q<HTMLSpanElement>("#status-text");
-const topbar = q<HTMLElement>("#topbar");
-const grabber = q<HTMLDivElement>("#grabber");
 const loadingSpinner = q<HTMLDivElement>("#loading-spinner");
 const loadingText = q<HTMLParagraphElement>("#loading-text");
 
 type State = "starting" | "running" | "stopped" | "error";
 
 let upgrading = false;
-let cliMode = false;
 let ready = false;
-let hideTimer: number | undefined;
+let runningNow = false;
 let startupErrorTimer: number | undefined;
 
-/** URL the iframe should load — the authenticated one once known. */
+/** Last known (tokenized when applicable) dsh web URL. */
 let currentUrl = APP_URL;
-/** Last URL actually assigned to the iframe, to avoid needless reloads. */
-let loadedUrl = "";
 
 function setStatus(state: State, text: string): void {
   dot.className = "dot " + state;
@@ -205,54 +220,17 @@ function setLoading(
 
 function showStartupError(message: string, opts: { nodejs?: boolean } = {}): void {
   ready = false;
+  runningNow = false;
   setStatus("error", t("status.error"));
   setLoading(message, { error: true, retry: true, nodejs: opts.nodejs });
-  showBar();
   appendLog("> " + message, "err");
 }
 
-function showApp(): void {
-  loading.style.display = "none";
-  if (loadedUrl !== currentUrl) {
-    loadedUrl = currentUrl;
-    iframe.src = currentUrl;
-  }
-}
-
-function showBar(): void {
-  if (hideTimer !== undefined) {
-    window.clearTimeout(hideTimer);
-    hideTimer = undefined;
-  }
-  topbar.classList.add("visible");
-  grabber.classList.add("hidden");
-}
-
-function scheduleHide(): void {
-  if (hideTimer !== undefined) window.clearTimeout(hideTimer);
-  hideTimer = window.setTimeout(() => {
-    topbar.classList.remove("visible");
-    grabber.classList.remove("hidden");
-    hideTimer = undefined;
-  }, 1500);
-}
-
-function setupBar(): void {
-  grabber.addEventListener("mouseenter", showBar);
-  grabber.addEventListener("click", showBar);
-  topbar.addEventListener("mouseenter", () => {
-    if (hideTimer !== undefined) {
-      window.clearTimeout(hideTimer);
-      hideTimer = undefined;
-    }
-  });
-  topbar.addEventListener("mouseleave", () => {
-    if (!cliMode) scheduleHide();
-  });
-  q("#bar-close").addEventListener("click", () => {
-    topbar.classList.remove("visible");
-    grabber.classList.remove("hidden");
-  });
+/** Send the main window to the dsh web app top-level. dsh's session cookie
+ *  is SameSite=Strict, so it can never authenticate inside a cross-site
+ *  iframe; the window itself must navigate there. */
+function navigateToApp(url: string): void {
+  invoke("navigate_main", { url, asApp: true }).catch(() => {});
 }
 
 async function start(): Promise<void> {
@@ -274,7 +252,10 @@ async function start(): Promise<void> {
 
 async function stop(): Promise<void> {
   appendLog("$ " + t("log.stopService"), "sys");
+  ready = false;
   const s = await invoke<any>("stop_server");
+  currentUrl = APP_URL;
+  runningNow = !!s.running;
   if (s.running) {
     appendLog("> " + t("log.notOwned"), "sys");
     setStatus("running", t("status.running") + APP_URL);
@@ -326,29 +307,59 @@ async function prepare(): Promise<boolean> {
 
 /**
  * 完整启动流程：前置检查 + 复用/启动服务。
+ * `returned` 表示主窗口是从 dsh 应用退回壳页面的（停止/异常退出）：
+ * 不自动重启，改为展示状态并等待用户操作。
  */
-async function boot(): Promise<void> {
+async function boot(returned = false): Promise<void> {
+  const tab = PARAMS.get("tab");
+  if (tab === "cli" || tab === "plugins") {
+    switchTab(tab);
+    await invoke("set_pinned", { pinned: true }).catch(() => {});
+  }
+
   // 服务已在运行则直接复用，无需前置检查。
   try {
     const s = await invoke<any>("server_status");
     if (s.running) {
       if (s.needs_auth) {
         showStartupError(t("err.authRequired"));
+        spawnShellOnce();
         return;
       }
       currentUrl = s.url || APP_URL;
-      showApp();
+      ready = true;
+      runningNow = true;
       setStatus("running", t("status.running") + APP_URL);
       appendLog("> " + t("log.reused", { url: s.url }), "sys");
-      spawnShellOnce();
+      void spawnShellOnce();
+      void refreshDshVersion();
+      // 顶层加载 dsh（除非用户明确停留在 CLI/插件页）。
+      if (tab !== "cli" && tab !== "plugins") navigateToApp(currentUrl);
+      else loading.style.display = "none";
       return;
     }
   } catch {
     // 忽略，走正常启动流程
   }
 
+  if (returned) {
+    // 返回壳页面且服务已不在运行：展示停止状态并提供重试，不自动重启，
+    // 否则会掩盖退出日志（或陷入崩溃重启循环）。
+    runningNow = false;
+    setStatus("stopped", t("status.exited"));
+    setLoading(t("loading.stopped"), { retry: true, spinner: false });
+    showCliHint();
+    await spawnShellOnce();
+    return;
+  }
+
   if (!(await prepare())) return;
   await start();
+}
+
+/** Show the "check the CLI tab" hint under an error/stopped overlay. */
+function showCliHint(): void {
+  q<HTMLParagraphElement>("#loading-hint").hidden = false;
 }
 
 async function upgrade(): Promise<void> {
@@ -363,10 +374,10 @@ async function upgrade(): Promise<void> {
       appendLog("> " + t("log.installedVersion", { version: r.version, message: r.message }), "sys");
       if (r.restarted) {
         // The old process is gone; `server:ready` will arrive with the new
-        // (possibly token-authenticated) URL and call showApp() again.
+        // (possibly token-authenticated) URL and Rust will navigate the
+        // main window back into the app.
         currentUrl = APP_URL;
-        loadedUrl = "";
-        iframe.src = "about:blank";
+        runningNow = true;
         setStatus("starting", t("status.starting"));
         setLoading(t("loading.starting"));
       }
@@ -409,12 +420,15 @@ function switchTab(key: string): void {
   Object.keys(panels).forEach((k) => panels[k].classList.toggle("active", k === key));
   window.requestAnimationFrame(fitTerminals);
   if (key === "cli" || key === "plugins") {
-    cliMode = true;
-    showBar();
+    // Staying on the shell deliberately: stop Rust from yanking the window
+    // into the app when the server becomes ready.
+    invoke("set_pinned", { pinned: true }).catch(() => {});
     if (key === "plugins") refreshPlugins();
   } else {
-    cliMode = false;
-    scheduleHide();
+    invoke("set_pinned", { pinned: false }).catch(() => {});
+    // The dsh app is loaded top-level, so "showing" it means navigating
+    // the whole window there.
+    if (runningNow) navigateToApp(currentUrl);
   }
 }
 
@@ -434,13 +448,14 @@ async function setupEvents(): Promise<void> {
       startupErrorTimer = undefined;
     }
     ready = true;
+    runningNow = true;
     currentUrl = e.payload || APP_URL;
     setStatus("running", t("status.running") + APP_URL);
-    showApp();
-    appendLog("> " + t("log.ready") + APP_URL, "sys");
-    spawnShellOnce();
-    refreshDshVersion();
-    if (!cliMode) scheduleHide();
+    appendLog("> " + t("log.ready") + currentUrl, "sys");
+    void spawnShellOnce();
+    void refreshDshVersion();
+    // No navigation here: Rust's open_app_when_ready already moves the
+    // main window into the app unless the user is pinned to the shell.
   });
   await listen("server:auth-error", () => {
     if (startupErrorTimer !== undefined) {
@@ -459,6 +474,7 @@ async function setupEvents(): Promise<void> {
     showStartupError(t("err.startupTimeout"));
   });
   await listen<number | null>("server:exited", (e) => {
+    runningNow = false;
     if (ready) {
       setStatus("stopped", t("status.exited"));
       appendLog("> " + t("log.processExited", { code: e.payload ?? 0 }), "sys");
@@ -477,6 +493,7 @@ async function setupEvents(): Promise<void> {
     }
   });
   await listen("server:stopped", () => {
+    runningNow = false;
     if (!ready) setLoading(t("loading.stopped"), { spinner: false });
     setStatus("stopped", t("status.stopped"));
   });
@@ -492,7 +509,7 @@ function setupButtons(): void {
   q("#btn-upgrade").addEventListener("click", upgrade);
   q("#btn-clear").addEventListener("click", clearLog);
   q("#btn-copy").addEventListener("click", copyLog);
-  q("#btn-retry").addEventListener("click", boot);
+  q("#btn-retry").addEventListener("click", () => void boot(false));
   q("#btn-nodejs").addEventListener("click", async () => {
     try {
       await invoke("open_nodejs_website");
@@ -662,7 +679,10 @@ async function spawnShellOnce(): Promise<void> {
   if (shellSpawned) return;
   shellSpawned = true;
   try {
-    await invoke("spawn_shell");
+    const r = await invoke<string>("spawn_shell");
+    // Returning from the app page reloads the shell but reuses the PTY:
+    // the fresh terminal is blank, so nudge the shell to redraw its prompt.
+    if (r === "reused") window.setTimeout(() => cliTerm?.write("\r"), 300);
   } catch (e) {
     appendLog("> " + String(e), "err");
   }
@@ -698,22 +718,104 @@ function fitTerminals(): void {
   if (q<HTMLElement>("#panel-cli").classList.contains("active")) cliTermFit?.fit();
 }
 
+// ===== 浮动工具栏窗口（index.html?view=bar） =====
+async function initBar(): Promise<void> {
+  const bdot = q<HTMLSpanElement>("#bar-dot");
+  const bstatus = q<HTMLSpanElement>("#bar-status");
+  let barRunning = false;
+  let barUrl = APP_URL;
+  const paint = (state: State, text: string): void => {
+    bdot.className = "dot " + state;
+    bstatus.textContent = text;
+  };
+
+  try {
+    const s = await invoke<any>("server_status");
+    if (s.running) {
+      barRunning = true;
+      barUrl = s.url || APP_URL;
+      paint("running", t("bar.running"));
+    } else {
+      paint("stopped", t("bar.stopped"));
+    }
+  } catch {
+    paint("error", t("bar.error"));
+  }
+
+  await listen<string | null>("server:ready", (e) => {
+    barRunning = true;
+    barUrl = e.payload || APP_URL;
+    paint("running", t("bar.running"));
+  });
+  await listen("server:auth-error", () => paint("error", t("bar.error")));
+  await listen("server:timeout", () => paint("error", t("bar.error")));
+  await listen("server:stopped", () => {
+    barRunning = false;
+    paint("stopped", t("bar.stopped"));
+  });
+  await listen<number | null>("server:exited", () => {
+    barRunning = false;
+    paint("stopped", t("bar.stopped"));
+  });
+  await listen<string>("install:status", (e) => paint("starting", e.payload));
+
+  q("#bar-app").addEventListener("click", async () => {
+    try {
+      await invoke("set_pinned", { pinned: false });
+      if (barRunning) {
+        await invoke("navigate_main", { url: barUrl, asApp: true });
+      } else {
+        paint("starting", t("bar.starting"));
+        await invoke("start_server");
+      }
+    } catch {
+      paint("error", t("bar.error"));
+    }
+  });
+  const gotoTab = (tab: string) => (): void => {
+    const url = shellUrlBase() + "?tab=" + tab;
+    invoke("navigate_main", { url, asApp: false }).catch(() => {});
+  };
+  q("#bar-cli").addEventListener("click", gotoTab("cli"));
+  q("#bar-plugins").addEventListener("click", gotoTab("plugins"));
+  q("#bar-restart").addEventListener("click", async () => {
+    paint("starting", t("bar.starting"));
+    try {
+      await invoke("restart_server");
+    } catch {
+      paint("error", t("bar.error"));
+    }
+  });
+  q("#bar-stop").addEventListener("click", async () => {
+    try {
+      const s = await invoke<any>("stop_server");
+      barRunning = !!s.running;
+      paint(barRunning ? "running" : "stopped", t(barRunning ? "bar.running" : "bar.stopped"));
+    } catch {
+      paint("error", t("bar.error"));
+    }
+  });
+  q("#bar-hide").addEventListener("click", () => {
+    invoke("hide_bar_window").catch(() => {});
+  });
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   applyTranslations();
   // 同步语言给 Rust 端，保证前后端消息语言一致
   await invoke("set_ui_lang", { isZh: LANG === "zh" });
+  if (BAR_VIEW) {
+    await initBar();
+    return;
+  }
+  // 报告壳页面地址，服务停止/退出时 Rust 用它把主窗口导航回来
+  invoke("register_shell_url", { url: shellUrlBase() }).catch(() => {});
   setupTabs();
   setupButtons();
-  setupBar();
   initTerminals();
   window.addEventListener("resize", fitTerminals);
-  // The bar is visible at startup so users discover the controls,
-  // then auto-hides after 5s (or on mouseleave / × button).
-  showBar();
-  window.setTimeout(() => {
-    if (!cliMode) scheduleHide();
-  }, 5000);
   q("#version").textContent = "dsh …";
   await setupEvents();
-  await boot();
+  // ret=1：主窗口是从 dsh 应用退回来的，不自动重启服务。
+  await boot(PARAMS.get("ret") === "1");
 });

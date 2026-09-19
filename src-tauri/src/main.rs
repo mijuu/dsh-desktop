@@ -9,7 +9,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -76,6 +78,65 @@ struct ServerState {
     /// Authenticated URL (with `?token=`) parsed from the launched
     /// `dsh web` output. New dsh versions reject plain `/` with 401.
     auth_url: Mutex<Option<String>>,
+}
+
+/// Which page the main window shows and where it should go next. dsh is
+/// loaded top-level (its session cookie is SameSite=Strict, so an iframe in
+/// the cross-site shell page could never authenticate); the shell page and
+/// the floating bar window drive these transitions.
+struct UiState {
+    /// Frontend-reported URL of the shell page (dev vs custom-protocol).
+    shell_url: Mutex<Option<String>>,
+    /// User deliberately stays on the shell (CLI / plugins tab): do not
+    /// yank the window into the app when the server becomes ready.
+    pinned: AtomicBool,
+    /// Main window currently shows the dsh app rather than the shell.
+    app_shown: AtomicBool,
+}
+
+/// Navigate the main window. `as_app` records whether dsh or the shell is
+/// on screen so server-exit events know to pull the user back.
+fn goto_main(app: &AppHandle, target: &str, as_app: bool) {
+    let Ok(url) = target.parse::<tauri::Url>() else {
+        return;
+    };
+    if let Some(w) = app.get_webview_window("main") {
+        if w.navigate(url).is_ok() {
+            app.state::<UiState>().app_shown.store(as_app, Ordering::SeqCst);
+        }
+    }
+}
+
+fn shell_url(app: &AppHandle) -> Option<String> {
+    app.state::<UiState>().shell_url.lock().unwrap().clone()
+}
+
+/// Shell URL with a query (e.g. `tab=cli`) so the reloaded page opens that
+/// tab instead of bouncing back into the app.
+fn shell_nav_url(app: &AppHandle, query: &str) -> Option<String> {
+    let base = shell_url(app)?;
+    let sep = if base.contains('?') { '&' } else { '?' };
+    Some(format!("{base}{sep}{query}"))
+}
+
+/// After `server:ready`: show the app in the main window unless the user is
+/// deliberately on the shell (CLI/plugins).
+fn open_app_when_ready(app: &AppHandle, url: &str) {
+    if !app.state::<UiState>().pinned.load(Ordering::SeqCst) {
+        goto_main(app, url, true);
+    }
+}
+
+/// Pull the main window back to the shell (after the server died while the
+/// app page was on screen). `ret=1` stops the reloaded shell from
+/// auto-starting a server: the user stopped/crashed it deliberately, and an
+/// immediate restart loop would mask the exit logs.
+fn return_to_shell(app: &AppHandle) {
+    if app.state::<UiState>().app_shown.load(Ordering::SeqCst) {
+        if let Some(u) = shell_nav_url(app, "ret=1") {
+            goto_main(app, &u, false);
+        }
+    }
 }
 
 /// State for the interactive shell running in the CLI terminal.
@@ -607,7 +668,14 @@ fn shell_command() -> CommandBuilder {
 /// Spawn the interactive shell for the CLI terminal and start streaming its
 /// output. Called once at startup.
 #[tauri::command]
-fn spawn_shell(app: AppHandle) -> Result<(), String> {
+fn spawn_shell(app: AppHandle) -> Result<String, String> {
+    // Idempotent: navigating the main window between the shell and the app
+    // page reloads the shell, whose frontend calls this on every boot. A
+    // second PTY would orphan the first shell and interleave term:data.
+    if app.state::<ShellState>().pid.lock().unwrap().is_some() {
+        return Ok("reused".to_string());
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -650,7 +718,7 @@ fn spawn_shell(app: AppHandle) -> Result<(), String> {
         *state.pid.lock().unwrap() = None;
     });
 
-    Ok(())
+    Ok("spawned".to_string())
 }
 
 /// Forward keystrokes from the frontend terminal to the shell's PTY.
@@ -903,6 +971,7 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
             let _ = app.emit("server:auth-error", ());
         } else {
             let _ = app.emit("server:ready", s.url.clone());
+            open_app_when_ready(app, &s.url);
         }
         return Ok(s);
     }
@@ -920,12 +989,19 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
         let app = app.clone();
         std::thread::spawn(move || {
             let code = waiter();
+            // The `dsh web` launcher can exit once its server is up: an
+            // exit while the port still serves is not a shutdown. Only
+            // tear state down once the port is actually closed.
+            if is_port_open(PORT) {
+                return;
+            }
             let state = app.state::<ServerState>();
             let mut guard = state.pid.lock().unwrap();
             *guard = None;
             *state.auth_url.lock().unwrap() = None;
             drop(guard);
             let _ = app.emit("server:exited", code);
+            return_to_shell(&app);
         });
     }
 
@@ -958,7 +1034,9 @@ fn start_internal(app: &AppHandle) -> Result<Status, String> {
                     if ready_url(&app) == url() && probe_needs_auth() {
                         let _ = app.emit("server:auth-error", ());
                     } else {
-                        let _ = app.emit("server:ready", ready_url(&app));
+                        let u = ready_url(&app);
+                        let _ = app.emit("server:ready", u.clone());
+                        open_app_when_ready(&app, &u);
                     }
                     return;
                 }
@@ -982,22 +1060,65 @@ fn start_server(app: AppHandle) -> Result<Status, String> {
     start_internal(&app)
 }
 
-#[tauri::command]
-fn stop_server(app: AppHandle) -> Status {
+fn stop_internal(app: &AppHandle) -> Status {
     let state = app.state::<ServerState>();
     let pid = {
         let mut guard = state.pid.lock().unwrap();
         guard.take()
     };
-    match pid {
+    let s = match pid {
         Some(pid) => {
             kill_process_group(pid);
             *state.auth_url.lock().unwrap() = None;
             let _ = app.emit("server:stopped", ());
-            status_of(&app, false)
+            status_of(app, false)
         }
         // Nothing we own: reflect whether 3080 is still up (reused server).
-        None => status_of(&app, is_port_open(PORT)),
+        None => status_of(app, is_port_open(PORT)),
+    };
+    return_to_shell(app);
+    s
+}
+
+#[tauri::command]
+fn stop_server(app: AppHandle) -> Status {
+    stop_internal(&app)
+}
+
+/// The shell page reports its own URL once at startup (dev URL vs the
+/// custom-protocol origin in production) so the Rust side can navigate back
+/// to it.
+#[tauri::command]
+fn register_shell_url(app: AppHandle, url: String) {
+    let mut guard = app.state::<UiState>().shell_url.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(url);
+    }
+}
+
+#[tauri::command]
+fn navigate_main(app: AppHandle, url: String, as_app: bool) {
+    goto_main(&app, &url, as_app);
+}
+
+/// true while the user is deliberately on the shell (CLI/plugins tab).
+#[tauri::command]
+fn set_pinned(app: AppHandle, pinned: bool) {
+    app.state::<UiState>().pinned.store(pinned, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn hide_bar_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("bar") {
+        let _ = w.hide();
+    }
+}
+
+#[tauri::command]
+fn show_bar_window(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("bar") {
+        let _ = w.show();
+        let _ = w.set_focus();
     }
 }
 
@@ -1232,16 +1353,110 @@ fn server_status(app: AppHandle) -> Status {
     status_of(&app, running)
 }
 
+/// Floating always-on-top control bar. Lives as its own top-level webview
+/// (same origin as the shell) so it stays reachable while the main window
+/// shows the dsh app.
+fn create_bar_window(app: &AppHandle) -> Result<(), String> {
+    let url = WebviewUrl::App("index.html?view=bar".into());
+    let mut builder = WebviewWindowBuilder::new(app, "bar", url)
+        .inner_size(660.0, 44.0)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .shadow(true);
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size)) = (main.outer_position(), main.inner_size()) {
+            let scale = main.scale_factor().unwrap_or(1.0);
+            let x = pos.x as f64 / scale + (size.width as f64 / scale - 660.0) / 2.0;
+            let y = pos.y as f64 / scale + 64.0;
+            builder = builder.position(x, y);
+        } else {
+            builder = builder.center();
+        }
+    } else {
+        builder = builder.center();
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn build_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let show_app = MenuItem::with_id(app, "show-app", tr("Open DSH App", "打开 DSH 应用"), true, None::<&str>)?;
+    let show_cli = MenuItem::with_id(app, "show-cli", tr("CLI Terminal", "CLI 终端"), true, None::<&str>)?;
+    let show_plugins = MenuItem::with_id(app, "show-plugins", tr("Plugins", "插件管理"), true, None::<&str>)?;
+    let show_bar = MenuItem::with_id(app, "show-bar", tr("Show Toolbar", "显示工具栏"), true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let restart = MenuItem::with_id(app, "restart", tr("Restart Service", "重启服务"), true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "stop", tr("Stop Service", "停止服务"), true, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", tr("Quit", "退出"), true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[&show_app, &show_cli, &show_plugins, &show_bar, &sep1, &restart, &stop, &sep2, &quit],
+    )?;
+    let mut tray = TrayIconBuilder::with_id("main-tray").menu(&menu).tooltip("DSH Desktop");
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.on_menu_event(|app, event| match event.id.as_ref() {
+        "show-app" => {
+            let s = status_of(app, true);
+            if s.running {
+                goto_main(app, &s.url, true);
+            }
+        }
+        "show-cli" | "show-plugins" => {
+            let tab = if event.id.as_ref() == "show-cli" { "cli" } else { "plugins" };
+            if let Some(u) = shell_nav_url(app, &format!("tab={tab}")) {
+                app.state::<UiState>().pinned.store(true, Ordering::SeqCst);
+                goto_main(app, &u, false);
+            }
+        }
+        "show-bar" => {
+            if let Some(w) = app.get_webview_window("bar") {
+                let _ = w.show();
+            }
+        }
+        "restart" => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                stop_internal(&app);
+                std::thread::sleep(Duration::from_millis(600));
+                let _ = start_internal(&app);
+            });
+        }
+        "stop" => {
+            stop_internal(app);
+        }
+        "quit" => app.exit(0),
+        _ => {}
+    })
+    .build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(ServerState {
             pid: Mutex::new(None),
             auth_url: Mutex::new(None),
         })
+        .manage(UiState {
+            shell_url: Mutex::new(None),
+            pinned: AtomicBool::new(false),
+            app_shown: AtomicBool::new(false),
+        })
         .manage(ShellState {
             master: Mutex::new(None),
             writer: Mutex::new(None),
             pid: Mutex::new(None),
+        })
+        .setup(|app| {
+            create_bar_window(&app.handle())?;
+            build_tray(&app.handle())?;
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             spawn_shell,
@@ -1257,7 +1472,12 @@ fn main() {
             ensure_dsh,
             open_nodejs_website,
             set_ui_lang,
-            list_plugins
+            list_plugins,
+            register_shell_url,
+            navigate_main,
+            set_pinned,
+            hide_bar_window,
+            show_bar_window
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

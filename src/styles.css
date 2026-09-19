@@ -39,25 +39,7 @@ body {
   height: 52px;
   background: var(--bg-2);
   border-bottom: 1px solid var(--border);
-  transform: translateY(-100%);
-  transition: transform 0.18s ease;
 }
-.topbar.visible { transform: translateY(0); }
-
-.grabber {
-  position: fixed;
-  top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 56px;
-  height: 5px;
-  border-radius: 3px;
-  background: rgba(230, 233, 239, 0.35);
-  z-index: 101;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-}
-.grabber.hidden { opacity: 0; pointer-events: none; }
 
 .brand { display: flex; align-items: center; gap: 10px; }
 
@@ -99,23 +81,17 @@ main {
   display: none;
 }
 .panel.active { display: flex; flex-direction: column; }
+#panel-app { padding-top: 52px; }
 #panel-cli { padding-top: 52px; }
 
-/* App tab: webview fills the whole panel */
+/* App tab: the dsh web app is loaded top-level in this window (its session
+   cookie is SameSite=Strict and cannot work in a cross-site iframe), so the
+   shell only shows the loading / startup-error overlay here. */
 .app-frame {
   flex: 1 1 auto;
   min-height: 0;
   position: relative;
   overflow: hidden;
-}
-#app-iframe {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: #fff;
-  display: block;
 }
 
 .loading {
@@ -328,3 +304,45 @@ main {
   background: var(--bg-2);
   border-top: 1px solid var(--border);
 }
+
+/* ===== Floating toolbar window (index.html?view=bar) ===== */
+#bar { display: none; }
+
+html.view-bar body { background: transparent; }
+html.view-bar #topbar,
+html.view-bar main { display: none !important; }
+
+html.view-bar #bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: fixed;
+  inset: 0;
+  padding: 0 12px;
+  background: rgba(22, 26, 34, 0.96);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  user-select: none;
+}
+#bar .dot { flex: 0 0 auto; }
+.bar-status {
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bar-spacer { flex: 1; }
+#bar button {
+  flex: 0 0 auto;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+#bar button:hover { border-color: var(--accent); }
+#bar .bar-close { background: transparent; border: none; }

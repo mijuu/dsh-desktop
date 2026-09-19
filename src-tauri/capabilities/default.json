@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "Capability for the main and bar windows",
+  "windows": ["main", "bar"],
+  "permissions": ["core:default", "core:window:allow-start-dragging"]
 }

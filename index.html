@@ -4,6 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DSH Desktop</title>
+    <script>
+      // Runs before the module/CSS paint: the same document serves the shell
+      // window and the floating toolbar window (?view=bar). The class lets
+      // CSS show exactly one of the two views with no flash.
+      document.documentElement.classList.toggle(
+        "view-bar",
+        new URLSearchParams(location.search).get("view") === "bar",
+      );
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
@@ -13,7 +22,7 @@
         <span class="version" id="version"></span>
       </div>
       <nav class="tabs">
-        <button class="tab active" data-tab="app">App</button>
+        <button class="tab active" data-tab="app" data-i18n="tab.app">App</button>
         <button class="tab" data-tab="cli">CLI</button>
         <button class="tab" data-tab="plugins" data-i18n="tab.plugins">Plugins</button>
       </nav>
@@ -21,10 +30,7 @@
         <span class="dot" id="status-dot"></span>
         <span id="status-text" data-i18n="status.starting">Starting…</span>
       </div>
-      <button class="bar-close" id="bar-close" data-i18n-title="bar.close" title="Hide toolbar">×</button>
     </header>
-
-    <div class="grabber" id="grabber" data-i18n-title="bar.show" title="Show toolbar"></div>
 
     <main>
       <section class="panel active" id="panel-app">
@@ -36,7 +42,6 @@
             <button class="retry-btn" id="btn-retry" data-i18n="btn.retry" hidden>Retry</button>
             <button class="retry-btn" id="btn-nodejs" data-i18n="btn.nodejs" hidden>Open Node.js website</button>
           </div>
-          <iframe id="app-iframe" src="about:blank" title="DSH Desktop"></iframe>
         </div>
       </section>
 
@@ -70,5 +75,19 @@
         <p class="plugins-hint" data-i18n="plugins.hint">Restart the service after installing / uninstalling plugins. Installation logs are in the CLI tab.</p>
       </section>
     </main>
+
+    <!-- Floating toolbar window (index.html?view=bar): the only control
+         surface while the main window shows the dsh app top-level. -->
+    <div id="bar" data-tauri-drag-region>
+      <span class="dot" id="bar-dot"></span>
+      <span class="bar-status" id="bar-status" data-tauri-drag-region></span>
+      <span class="bar-spacer"></span>
+      <button id="bar-app" data-i18n="bar.app">App</button>
+      <button id="bar-cli">CLI</button>
+      <button id="bar-plugins" data-i18n="tab.plugins">Plugins</button>
+      <button id="bar-restart" data-i18n="btn.restart">Restart</button>
+      <button id="bar-stop" data-i18n="btn.stop">Stop</button>
+      <button class="bar-close" id="bar-hide" data-i18n-title="bar.close" title="Hide toolbar">×</button>
+    </div>
   </body>
 </html>
